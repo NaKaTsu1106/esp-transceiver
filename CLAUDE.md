@@ -74,7 +74,7 @@ config/    設定ロード
 - **GCC 15.2.0のコンパイラICE**: `esp_lcd_panel_rgb.c` でクラッシュするため、`transceiver/CMakeLists.txt` で `set(EXCLUDE_COMPONENTS esp_lcd)` を設定済み。
 - **AXP2101 BLDO1は絶対に無効化しない**: SIM7080G↔ESP32間のUARTレベルシフタ電源。無効化するとモデムと通信不能になる。
 - **`config.h` のインクルード**: `config.h` は `transceiver/main/` にある。各コンポーネントの `CMakeLists.txt` の `INCLUDE_DIRS` に `"${CMAKE_SOURCE_DIR}/main"` を追加することで参照可能。
-- **新I2C API**: `driver/i2c_master.h` を使用する場合、`CMakeLists.txt` の `REQUIRES` は `driver` ではなく `esp_driver_i2c` を指定する。
+- **新I2C API**: `driver/i2c_master.h` を使用する場合、`CMakeLists.txt` の `REQUIRES` は `driver` ではなく `esp_driver_i2c` を指定する。新APIは7ビットアドレスを使用する（仕様書・旧コードの `0x68` は8ビット表記で、7ビットは `0x34`）。
 - **`esp-libopus`**: `codec` コンポーネントはStep 6実装時まで依存不要。使用時は `idf_component.yml` に `espressif/esp-libopus` を追加し、`CMakeLists.txt` の `REQUIRES` に追記する。
 
 ## Implementation Steps

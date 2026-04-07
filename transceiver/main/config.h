@@ -31,7 +31,7 @@
 #define CONFIG_PMIC_SDA_PIN     15
 #define CONFIG_PMIC_SCL_PIN     7
 #define CONFIG_PMIC_IRQ_PIN     6
-#define CONFIG_PMIC_I2C_ADDR    0x68
+#define CONFIG_PMIC_I2C_ADDR    0x34    // 7ビットアドレス（仕様書の0x68は8ビット表記）
 #define CONFIG_PMIC_I2C_FREQ    400000      // 400kHz
 
 // =============================================================================

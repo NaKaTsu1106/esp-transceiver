@@ -9,14 +9,12 @@ static const char *TAG = "axp2101";
 
 // レジスタ定義
 #define AXP2101_REG_CHIP_ID     0x03    // チップID（期待値: 0x47）
-#define AXP2101_CHIP_ID         0x47
-#define AXP2101_REG_ICC         0x61    // 充電電流設定 bits[4:0]
+#define AXP2101_CHIP_ID         0x4A
 #define AXP2101_REG_DCDC_EN     0x80    // DCDCチャンネル有効化
 #define AXP2101_REG_LDO_EN      0x90    // LDO/BLDOチャンネル有効化
 
 #define AXP2101_DCDC3_EN_BIT    (1 << 2)    // DCDC3: SIM7080G電源
 #define AXP2101_BLDO1_EN_BIT    (1 << 4)    // BLDO1: レベルシフタ電源（無効化禁止）
-#define AXP2101_ICC_500MA       0x08         // 500mA
 
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
@@ -89,18 +87,7 @@ esp_err_t axp2101_init(void)
     }
     ESP_LOGI(TAG, "DCDC3 (SIM7080G power) enabled");
 
-    // 2-4: 充電電流設定（500mA）
-    uint8_t icc;
-    ret = axp2101_read(AXP2101_REG_ICC, &icc);
-    if (ret != ESP_OK) return ret;
-    ret = axp2101_write(AXP2101_REG_ICC, (icc & 0xE0) | AXP2101_ICC_500MA);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "charge current set failed");
-        return ret;
-    }
-    ESP_LOGI(TAG, "Charge current: 500mA");
-
-    // 2-5: 100ms待機（モデム電源安定待ち）
+    // 2-4: 100ms待機（モデム電源安定待ち）
     vTaskDelay(pdMS_TO_TICKS(100));
 
     ESP_LOGI(TAG, "axp2101_init OK");
