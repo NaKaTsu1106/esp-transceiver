@@ -2,5 +2,8 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.22)
 
+# esp_lcd は本プロジェクトで未使用。GCC 15.2.0 でのコンパイラICEを回避するため除外
+set(EXCLUDE_COMPONENTS esp_lcd)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(transceiver)
