@@ -116,7 +116,8 @@ func handleTCPConn(conn net.Conn) {
 
 		switch msg.Type {
 		case protocol.MsgHeartbeat:
-			// LastSeen を更新するだけ（応答なし）
+			// LastSeen を更新してモニターへ配信
+			monitor.BroadcastDeviceUpdate(dev.SessionID)
 
 		case protocol.MsgDisconnect:
 			log.Printf("TCP session %d: DISCONNECT received", dev.SessionID)

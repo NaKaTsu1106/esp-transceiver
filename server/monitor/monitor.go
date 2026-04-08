@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/NaKaTsu1106/esp-transceiver/server/device"
 )
@@ -34,8 +33,8 @@ func deviceListJSON() string {
 			DeviceID:    fmt.Sprintf("0x%08X", d.DeviceID),
 			GroupID:     d.GroupID,
 			Status:      string(d.Status),
-			ConnectedAt: d.ConnectedAt.Format(time.TimeOnly),
-			LastSeen:    d.LastSeen.Format(time.TimeOnly),
+			ConnectedAt: d.ConnectedAt.Format("15:04:05"),
+			LastSeen:    d.LastSeen.Format("15:04:05"),
 		})
 	}
 	b, _ := json.Marshal(deviceListEvent{Type: "devices", Devices: infos})
