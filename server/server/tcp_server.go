@@ -8,6 +8,7 @@ import (
 
 	"github.com/NaKaTsu1106/esp-transceiver/server/config"
 	"github.com/NaKaTsu1106/esp-transceiver/server/device"
+	"github.com/NaKaTsu1106/esp-transceiver/server/floor"
 	"github.com/NaKaTsu1106/esp-transceiver/server/monitor"
 	"github.com/NaKaTsu1106/esp-transceiver/server/protocol"
 )
@@ -125,13 +126,57 @@ func handleTCPConn(conn net.Conn) {
 			goto cleanup
 
 		case protocol.MsgPTTStart:
-			// TODO: Step 5で実装
+			if floor.Request(dev.GroupID, dev.SessionID) {
+				// 送話権付与
+				device.UpdateStatus(dev.SessionID, device.StatusTransmitting)
+				ack := &protocol.CtrlMsg{Type: protocol.MsgPTTStartAck}
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
+				conn.Write(protocol.Encode(ack))
+				conn.SetDeadline(time.Time{})
+				monitor.Log(monitor.LevelInfo, fmt.Sprintf("0x%08X", deviceID),
+					"PTT_START granted session=%d group=%d", dev.SessionID, dev.GroupID)
+				monitor.BroadcastDeviceUpdate(dev.SessionID)
+				// グループ内の他端末へ PTT_NOTIFY 送信
+				sendToGroup(dev.GroupID, dev.SessionID, protocol.MakePTTNotify(dev.SessionID))
+			} else {
+				// 送話権拒否
+				deny := &protocol.CtrlMsg{Type: protocol.MsgPTTStartDeny}
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
+				conn.Write(protocol.Encode(deny))
+				conn.SetDeadline(time.Time{})
+				monitor.Log(monitor.LevelInfo, fmt.Sprintf("0x%08X", deviceID),
+					"PTT_START denied session=%d group=%d holder=%d",
+					dev.SessionID, dev.GroupID, floor.Holder(dev.GroupID))
+			}
 
 		case protocol.MsgPTTStop:
-			// TODO: Step 5で実装
+			floor.Release(dev.GroupID, dev.SessionID)
+			device.UpdateStatus(dev.SessionID, device.StatusStandby)
+			monitor.Log(monitor.LevelInfo, fmt.Sprintf("0x%08X", deviceID),
+				"PTT_STOP session=%d group=%d", dev.SessionID, dev.GroupID)
+			monitor.BroadcastDeviceUpdate(dev.SessionID)
+			// グループ内の他端末へ PTT_NOTIFY_STOP 送信
+			sendToGroup(dev.GroupID, dev.SessionID, protocol.MakePTTNotifyStop())
 
 		case protocol.MsgGroupChange:
-			// TODO: Step 5で実装
+			if len(msg.Payload) < 1 {
+				log.Printf("TCP session %d: GROUP_CHANGE payload too short", dev.SessionID)
+				break
+			}
+			newGroup := msg.Payload[0]
+			// 送話中なら送話権を解放
+			floor.Release(dev.GroupID, dev.SessionID)
+			oldGroup := dev.GroupID
+			device.UpdateStatus(dev.SessionID, device.StatusStandby)
+			device.UpdateGroup(dev.SessionID, newGroup)
+			dev.GroupID = newGroup
+			ack := &protocol.CtrlMsg{Type: protocol.MsgGroupChangeAck, Payload: []byte{newGroup}}
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			conn.Write(protocol.Encode(ack))
+			conn.SetDeadline(time.Time{})
+			monitor.Log(monitor.LevelInfo, fmt.Sprintf("0x%08X", deviceID),
+				"GROUP_CHANGE session=%d %d→%d", dev.SessionID, oldGroup, newGroup)
+			monitor.BroadcastDeviceUpdate(dev.SessionID)
 
 		default:
 			monitor.Log(monitor.LevelWarn, fmt.Sprintf("0x%08X", deviceID),
@@ -141,7 +186,27 @@ func handleTCPConn(conn net.Conn) {
 	}
 
 cleanup:
+	// 送話中のまま切断された場合は送話権を解放
+	if floor.Holder(dev.GroupID) == dev.SessionID {
+		floor.Release(dev.GroupID, dev.SessionID)
+		sendToGroup(dev.GroupID, dev.SessionID, protocol.MakePTTNotifyStop())
+	}
 	device.Remove(dev.SessionID)
 	log.Printf("TCP session %d cleaned up", dev.SessionID)
 	monitor.BroadcastDeviceUpdate(dev.SessionID)
+}
+
+// sendToGroup はグループ内の sender 以外の全端末へメッセージを送信する
+func sendToGroup(groupID, senderSessionID uint8, msg *protocol.CtrlMsg) {
+	encoded := protocol.Encode(msg)
+	for _, d := range device.AllInGroup(groupID) {
+		if d.SessionID == senderSessionID {
+			continue
+		}
+		d.Conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := d.Conn.Write(encoded); err != nil {
+			log.Printf("sendToGroup: write to session %d failed: %v", d.SessionID, err)
+		}
+		d.Conn.SetDeadline(time.Time{})
+	}
 }

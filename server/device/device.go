@@ -84,6 +84,37 @@ func Get(sessionID uint8) *Device {
 	return devices[sessionID]
 }
 
+// UpdateStatus は端末のステータスを更新する
+func UpdateStatus(sessionID uint8, status Status) {
+	mu.Lock()
+	defer mu.Unlock()
+	if d, ok := devices[sessionID]; ok {
+		d.Status = status
+	}
+}
+
+// UpdateGroup は端末のグループIDを更新する
+func UpdateGroup(sessionID uint8, groupID uint8) {
+	mu.Lock()
+	defer mu.Unlock()
+	if d, ok := devices[sessionID]; ok {
+		d.GroupID = groupID
+	}
+}
+
+// AllInGroup は指定グループの接続端末を返す
+func AllInGroup(groupID uint8) []*Device {
+	mu.RLock()
+	defer mu.RUnlock()
+	list := make([]*Device, 0)
+	for _, d := range devices {
+		if d.GroupID == groupID {
+			list = append(list, d)
+		}
+	}
+	return list
+}
+
 func UpdateUDPAddr(sessionID uint8, addr *net.UDPAddr) {
 	// TODO: Step 6で実装
 }
