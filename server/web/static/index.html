@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP Transceiver Monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', sans-serif; font-size: 14px; display: flex; flex-direction: column; height: 100vh; }
+
+  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  header h1 { font-size: 16px; font-weight: 600; color: #58a6ff; }
+  #conn-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; transition: background 0.3s; }
+  #conn-dot.disconnected { background: #f85149; }
+  #conn-dot.connecting { background: #d29922; }
+
+  main { display: flex; flex-direction: column; flex: 1; overflow: hidden; padding: 16px; gap: 16px; }
+
+  section { background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+
+  .section-header { padding: 10px 16px; background: #21262d; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .section-header h2 { font-size: 13px; font-weight: 600; }
+  .badge { background: #388bfd26; color: #58a6ff; border: 1px solid #388bfd66; border-radius: 12px; padding: 1px 8px; font-size: 11px; }
+
+  /* 端末テーブル */
+  #devices { flex-shrink: 0; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { padding: 8px 12px; text-align: left; color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid #21262d; transition: background 0.1s; }
+  tbody tr:hover { background: #21262d; }
+  tbody td { padding: 8px 12px; font-family: monospace; white-space: nowrap; }
+  #no-devices { text-align: center; color: #484f58; padding: 20px; font-style: italic; }
+
+  .status-badge { border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500; }
+  .status-standby      { background: #1a7f3726; color: #3fb950; border: 1px solid #1a7f3766; }
+  .status-transmitting { background: #388bfd26; color: #58a6ff; border: 1px solid #388bfd66; }
+  .status-receiving    { background: #9e6a0326; color: #d29922; border: 1px solid #9e6a0366; }
+  .status-disconnected { background: #b62324;   color: #f85149; border: 1px solid #f8514966; }
+
+  /* ログパネル */
+  #logs { flex: 1; min-height: 0; }
+  .log-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filter-btn { background: transparent; border: 1px solid #30363d; color: #8b949e; border-radius: 4px; padding: 2px 10px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .filter-btn.active { border-color: #58a6ff; color: #58a6ff; background: #388bfd1a; }
+  .filter-btn.warn.active  { border-color: #d29922; color: #d29922; background: #9e6a031a; }
+  .filter-btn.error.active { border-color: #f85149; color: #f85149; background: #b623241a; }
+  .clear-btn { margin-left: auto; background: transparent; border: 1px solid #30363d; color: #8b949e; border-radius: 4px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+  .clear-btn:hover { color: #e6edf3; border-color: #8b949e; }
+
+  #log-output { flex: 1; overflow-y: auto; padding: 8px 0; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; }
+  .log-line { padding: 2px 16px; line-height: 1.6; display: flex; gap: 8px; }
+  .log-line:hover { background: #21262d; }
+  .log-line.hidden { display: none; }
+  .log-time  { color: #484f58; flex-shrink: 0; }
+  .log-level { flex-shrink: 0; width: 36px; font-weight: 600; }
+  .log-line.INFO  .log-level { color: #3fb950; }
+  .log-line.WARN  .log-level { color: #d29922; }
+  .log-line.ERROR .log-level { color: #f85149; }
+  .log-device { color: #58a6ff; flex-shrink: 0; min-width: 110px; }
+  .log-msg { color: #e6edf3; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>IP Transceiver Monitor</h1>
+  <div id="conn-status">
+    <div id="conn-dot" class="connecting"></div>
+    <span id="conn-label">接続中...</span>
+  </div>
+</header>
+
+<main>
+  <!-- 接続端末一覧 -->
+  <section id="devices">
+    <div class="section-header">
+      <h2>接続端末</h2>
+      <span class="badge" id="device-count">0 台</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Device ID</th>
+            <th>Group</th>
+            <th>Status</th>
+            <th>接続時刻</th>
+            <th>最終応答</th>
+          </tr>
+        </thead>
+        <tbody id="device-tbody">
+          <tr id="no-devices"><td colspan="6">端末未接続</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ログパネル -->
+  <section id="logs">
+    <div class="section-header">
+      <h2>ログ</h2>
+      <div class="log-toolbar">
+        <button class="filter-btn active"       data-level="INFO"  onclick="toggleFilter('INFO',  this)">INFO</button>
+        <button class="filter-btn warn  active" data-level="WARN"  onclick="toggleFilter('WARN',  this)">WARN</button>
+        <button class="filter-btn error active" data-level="ERROR" onclick="toggleFilter('ERROR', this)">ERROR</button>
+        <button class="clear-btn" onclick="clearLogs()">クリア</button>
+      </div>
+    </div>
+    <div id="log-output"></div>
+  </section>
+</main>
+
+<script>
+const visibleLevels = new Set(['INFO', 'WARN', 'ERROR']);
+let autoScroll = true;
+
+// ---- SSE 接続 ----
+function connect() {
+  const dot   = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  dot.className = 'connecting';
+  label.textContent = '接続中...';
+
+  const es = new EventSource('/events');
+
+  es.onopen = () => {
+    dot.className = '';
+    label.textContent = '接続済み';
+  };
+
+  es.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'devices') renderDevices(msg.devices);
+      else if (msg.type === 'log') appendLog(msg);
+    } catch (_) {}
+  };
+
+  es.onerror = () => {
+    dot.className = 'disconnected';
+    label.textContent = '切断 (再接続待ち)';
+    es.close();
+    setTimeout(connect, 3000);
+  };
+}
+
+// ---- 端末テーブル ----
+function renderDevices(devices) {
+  const tbody = document.getElementById('device-tbody');
+  const countEl = document.getElementById('device-count');
+  tbody.innerHTML = '';
+
+  if (!devices || devices.length === 0) {
+    tbody.innerHTML = '<tr id="no-devices"><td colspan="6">端末未接続</td></tr>';
+    countEl.textContent = '0 台';
+    return;
+  }
+
+  countEl.textContent = devices.length + ' 台';
+  devices.forEach(d => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${d.session_id}</td>
+      <td>${d.device_id}</td>
+      <td>${d.group_id}</td>
+      <td><span class="status-badge status-${d.status}">${d.status}</span></td>
+      <td>${d.connected_at}</td>
+      <td>${d.last_seen}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ---- ログ ----
+function appendLog(entry) {
+  const out = document.getElementById('log-output');
+  const atBottom = out.scrollHeight - out.scrollTop <= out.clientHeight + 4;
+
+  const line = document.createElement('div');
+  line.className = `log-line ${entry.level}`;
+  if (!visibleLevels.has(entry.level)) line.classList.add('hidden');
+
+  line.innerHTML = `
+    <span class="log-time">${entry.time}</span>
+    <span class="log-level">${entry.level}</span>
+    <span class="log-device">${entry.device_id || '-'}</span>
+    <span class="log-msg">${escapeHtml(entry.message)}</span>
+  `;
+  out.appendChild(line);
+
+  // 古いエントリを削除（最大500行）
+  while (out.children.length > 500) out.removeChild(out.firstChild);
+
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function toggleFilter(level, btn) {
+  if (visibleLevels.has(level)) {
+    visibleLevels.delete(level);
+    btn.classList.remove('active');
+  } else {
+    visibleLevels.add(level);
+    btn.classList.add('active');
+  }
+  document.querySelectorAll(`#log-output .log-line.${level}`).forEach(el => {
+    el.classList.toggle('hidden', !visibleLevels.has(level));
+  });
+}
+
+function clearLogs() {
+  document.getElementById('log-output').innerHTML = '';
+}
+
+connect();
+</script>
+</body>
+</html>

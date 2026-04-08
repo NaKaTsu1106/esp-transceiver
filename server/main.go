@@ -9,12 +9,13 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log.Printf("Starting IP Transceiver Server (TCP:%d UDP:%d WS:%d)",
+	log.Printf("Starting IP Transceiver Server (TCP:%d UDP:%d Monitor:%d)",
 		cfg.TCPPort, cfg.UDPPort, cfg.WSPort)
 
-	// TODO: Step 4でTCPサーバー起動
+	go srv.RunWSServer(cfg)
+
 	// TODO: Step 6でUDPサーバー起動
-	// TODO: Step 9でWebSocketサーバー起動
+	// go srv.RunUDPServer(cfg)
 
 	srv.RunTCPServer(cfg)
 }
