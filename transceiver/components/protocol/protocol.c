@@ -3,15 +3,29 @@
 
 int proto_encode(const ctrl_msg_t *msg, uint8_t *buf, size_t buf_len)
 {
-    // TODO: Step 4で実装
     // フォーマット: [1バイト: ペイロード長][1バイト: タイプ][ペイロード]
-    return 0;
+    size_t total = 2 + msg->payload_len;
+    if (buf_len < total) return -1;
+    buf[0] = msg->payload_len;
+    buf[1] = msg->type;
+    if (msg->payload_len > 0) {
+        memcpy(&buf[2], msg->payload, msg->payload_len);
+    }
+    return (int)total;
 }
 
 int proto_decode(const uint8_t *buf, size_t len, ctrl_msg_t *msg)
 {
-    // TODO: Step 4で実装
-    return 0;
+    // フォーマット: [1バイト: ペイロード長][1バイト: タイプ][ペイロード]
+    if (len < 2) return -1;
+    uint8_t payload_len = buf[0];
+    if (len < (size_t)(2 + payload_len)) return -1;
+    msg->payload_len = payload_len;
+    msg->type        = buf[1];
+    if (payload_len > 0) {
+        memcpy(msg->payload, &buf[2], payload_len);
+    }
+    return 2 + payload_len;
 }
 
 void proto_build_udp_header(udp_header_t *hdr, uint8_t session_id,
