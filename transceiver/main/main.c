@@ -51,7 +51,7 @@ void app_main(void)
     ESP_LOGI(TAG, "[Phase 7] Starting tasks");
 
     // Core 0: 通信系
-    xTaskCreatePinnedToCore(tcp_task,       "tcp",       4096, NULL, 8,  NULL, 0);
+    xTaskCreatePinnedToCore(tcp_task,       "tcp",       8192, NULL, 8,  NULL, 0);
     xTaskCreatePinnedToCore(udp_rx_task,    "udp_rx",    4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(udp_tx_task,    "udp_tx",    4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 2048, NULL, 5,  NULL, 0);

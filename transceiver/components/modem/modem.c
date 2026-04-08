@@ -207,6 +207,18 @@ esp_err_t modem_connect(void)
     }
     ESP_LOGI(TAG, "PDP context activated");
 
+    // 4-2b: アプリケーションネットワーク設定 + 有効化
+    // SIM7080G の TCP Application Toolkit (CAOPEN) は CNCFG/CNACT で管理する
+    // アプリネットワーク 0 に APN を設定
+    at_cmd_send("AT+CNCFG=0,1,\"soracom.io\",\"sora\",\"sora\",1", "OK", 5000);
+    for (int i = 0; i < MODEM_RETRY_MAX; i++) {
+        if (at_cmd_send("AT+CNACT=0,1", "OK", 10000) == ESP_OK) break;
+        ESP_LOGW(TAG, "CNACT retry %d", i + 1);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));   // アプリネット確立待ち
+    ESP_LOGI(TAG, "App network activated");
+
     // 4-3: IP アドレス取得確認
     char ip_buf[32] = {0};
     for (int i = 0; i < MODEM_RETRY_MAX; i++) {
@@ -264,9 +276,10 @@ esp_err_t modem_tcp_open(const char *host, uint16_t port)
     at_cmd_send("AT+CACLOSE=0", "OK", 3000);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // AT+CAOPEN=<idx>,<pdp_cid>,"TCP","<host>",<port>
+    // AT+CAOPEN=<connectID>,<pdpidx>,"TCP","<host>",<port>
+    // pdpidx=0: CNCFG/CNACTで管理するアプリネットワーク0を使用
     char cmd[128];
-    snprintf(cmd, sizeof(cmd), "AT+CAOPEN=%d,1,\"TCP\",\"%s\",%u",
+    snprintf(cmd, sizeof(cmd), "AT+CAOPEN=%d,0,\"TCP\",\"%s\",%u",
              TCP_CONN_ID, host, port);
 
     esp_err_t ret = ESP_ERR_TIMEOUT;
@@ -349,9 +362,11 @@ esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
     int tx_len = snprintf(tx, sizeof(tx), "AT+CARECV=%d,%zu\r\n", TCP_CONN_ID, max_len);
     uart_write_bytes(CONFIG_MODEM_UART_NUM, tx, tx_len);
 
-    // レスポンス例: "\r\n+CARECV: N\r\n<N bytes data>\r\nOK\r\n"
-    // at_cmd_wait_line で "+CARECV: N" 行を先読みし、Nを確定してから生バイト読み
-    char hdr[64];
+    // SIM7080G の AT+CARECV レスポンス形式:
+    //   "+CARECV: N,<Nバイトのデータ>\r\n\r\nOK\r\n"
+    // データはカンマ区切りで同行に含まれている。
+    // hdr は "+CARECV: N,<データ>" 行全体を保持できるサイズが必要。
+    char hdr[512];
     esp_err_t ret = at_cmd_wait_line("+CARECV: ", hdr, sizeof(hdr), timeout_ms);
     if (ret != ESP_OK) {
         xSemaphoreGive(s_at_mutex);
@@ -362,24 +377,46 @@ esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
     int n = (p) ? atoi(p + 9) : 0;
 
     if (n <= 0) {
-        // データなし、 "OK\r\n" を読み捨て
+        // データなし: "\r\nOK\r\n" を読み捨て
         char dummy[16];
         at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
         xSemaphoreGive(s_at_mutex);
         return ESP_OK;
     }
 
-    // n バイトを生バイトで読み出す
     size_t to_read = ((size_t)n < max_len) ? (size_t)n : max_len;
-    ret = at_cmd_read_raw(buf, to_read, 2000);
-    if (ret == ESP_OK) {
+
+    // カンマを探す: "+CARECV: N,<data>" 形式かどうか
+    char *comma = (p) ? strchr(p + 9, ',') : NULL;
+    if (comma != NULL) {
+        // データは hdr 内のカンマ直後に格納済み（バイナリセーフ memcpy）
+        memcpy(buf, comma + 1, to_read);
         *out_len = to_read;
-        ESP_LOGD(TAG, "TCP recv %zu bytes", *out_len);
+        ret = ESP_OK;
+        ESP_LOGD(TAG, "TCP recv %zu bytes (inline)", *out_len);
     } else {
-        ESP_LOGE(TAG, "TCP recv raw read failed");
+        // カンマなし: データは UART の次バイトから続く（フォーマットA）
+        size_t data_start = 0;
+        uint8_t first;
+        if (uart_read_bytes(CONFIG_MODEM_UART_NUM, &first, 1, pdMS_TO_TICKS(500)) == 1) {
+            if (first == '\r') {
+                uint8_t lf;
+                uart_read_bytes(CONFIG_MODEM_UART_NUM, &lf, 1, pdMS_TO_TICKS(50));
+            } else {
+                buf[0]     = first;
+                data_start = 1;
+            }
+        }
+        ret = at_cmd_read_raw(buf + data_start, to_read - data_start, 2000);
+        if (ret == ESP_OK) {
+            *out_len = to_read;
+            ESP_LOGD(TAG, "TCP recv %zu bytes", *out_len);
+        } else {
+            ESP_LOGE(TAG, "TCP recv raw read failed");
+        }
     }
 
-    // "OK\r\n" を読み捨て（エラー無視）
+    // 後続の "\r\nOK\r\n" を読み捨て（エラー無視）
     char dummy[16];
     at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
 

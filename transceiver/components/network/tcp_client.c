@@ -75,8 +75,8 @@ static esp_err_t recv_hello_ack(void)
         ESP_LOGE(TAG, "HELLO_ACK: unexpected type 0x%02X", msg_type);
         return ESP_FAIL;
     }
-    if (payload_len < 1) {
-        ESP_LOGE(TAG, "HELLO_ACK: payload too short");
+    if (payload_len < 1 || payload_len > sizeof(raw)) {
+        ESP_LOGE(TAG, "HELLO_ACK: invalid payload_len %u", payload_len);
         return ESP_FAIL;
     }
 
@@ -110,10 +110,13 @@ static int recv_one_msg(ctrl_msg_t *msg)
     if (got == 0) return 0;   // データなし
 
     if (got < 2) {
-        // まれに1バイトだけ返ることへの対処
-        size_t got2 = 0;
-        modem_tcp_recv(hdr + got, 2 - got, &got2, 1000);
-        got += got2;
+        // まれに1バイトだけ返る場合：タイムアウト付きループで残りを取得
+        TickType_t dl = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+        while (got < 2 && xTaskGetTickCount() < dl) {
+            size_t got2 = 0;
+            modem_tcp_recv(hdr + got, 2 - got, &got2, 500);
+            got += got2;
+        }
         if (got < 2) return -1;
     }
 
