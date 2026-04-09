@@ -25,7 +25,7 @@ static const char *TAG = "axp2101";
 // 電圧計算
 // BLDO1: 500mV + n*100mV → 3300mV = (3300-500)/100 = 0x1C
 #define AXP2101_BLDO1_3300MV    ((3300 - 500) / 100)
-// DCDC3: 1600mV + (n-0x58)*100mV → 3000mV = (3000-1600)/100 + 0x58 = 0x66
+// DCDC3: 1600mV + (n-0x58)*100mV → 3000mV = (3000-1600)/100 + 0x58 = 0x66t-
 #define AXP2101_DCDC3_3000MV    ((3000 - 1600) / 100 + 0x58)
 
 static i2c_master_bus_handle_t s_bus;

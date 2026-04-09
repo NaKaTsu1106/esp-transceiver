@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "led.h"
 
 static const char *TAG = "state_machine";
 
@@ -152,9 +153,36 @@ void ptt_task(void *arg)
 
 void led_task(void *arg)
 {
-    // TODO: Step 2で実装
-    ESP_LOGI(TAG, "led_task: stub");
-    vTaskDelete(NULL);
+    ESP_LOGI(TAG, "led_task: started");
+
+    uint8_t current_mode = CHGLED_1HZ; // 起動直後は1Hz点滅（main.cで設定済み）
+
+    while (1) {
+        EventBits_t bits = xEventGroupGetBits(g_system_events);
+
+        uint8_t next_mode;
+        if (bits & EVT_FLOOR_GRANTED) {
+            next_mode = CHGLED_4HZ;   // 送話中: 4Hz点滅
+        } else if (bits & EVT_FLOOR_BUSY) {
+            next_mode = CHGLED_1HZ;   // 受話中: 1Hz点滅（2Hzモードは存在しないため）
+        } else if (bits & EVT_CONNECTED) {
+            next_mode = CHGLED_ON;    // 待機中: 常時点灯
+        } else {
+            next_mode = CHGLED_1HZ;   // 接続エラー・再接続中: 1Hz点滅
+        }
+
+        if (next_mode != current_mode) {
+            esp_err_t ret = led_set(next_mode);
+            if (ret == ESP_OK) {
+                current_mode = next_mode;
+                ESP_LOGI(TAG, "led_task: mode -> 0x%02X", next_mode);
+            } else {
+                ESP_LOGW(TAG, "led_task: led_set failed: %s", esp_err_to_name(ret));
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100)); // 100ms ポーリング
+    }
 }
 
 void heartbeat_task(void *arg)

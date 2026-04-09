@@ -120,31 +120,45 @@ LTE-Mネットワークを介して複数端末間でリアルタイム音声通
 | 項目 | 内容 |
 |------|------|
 | 制御レジスタ | 0x69 |
-| 制御マスク | 0x37（bit3、bit6〜7は他機能用のため変更禁止） |
-| 手動制御モード | bits\[5:4\] = `11`（`CHGLED_MANUAL = 0x30`） |
+| 保持ビット | 0xC8（bit3、bit6〜7は予約のため変更禁止） |
+| 手動制御有効化 | bit2=MAN=1、bit0=AUTO=1（`0x05` を OR する） |
 
-**レジスタ操作手順**（Read-Modify-Write）
+**レジスタビットマップ**
+
+| bit | 役割 |
+|-----|------|
+| 7-6 | 予約（変更禁止） |
+| 5-4 | LED状態（手動制御時）: 00=OFF, 01=1Hz, 10=4Hz, 11=ON |
+| 3 | 予約（変更禁止） |
+| 2 | MAN（手動制御有効）= 1 に固定 |
+| 1 | 予約（変更禁止） |
+| 0 | AUTO（充電連動制御）= 1 に固定 |
+
+**レジスタ操作手順**（Read-Modify-Write、XPowersLib `setChargingLedMode()` 準拠）
 
 ```c
 // 1. レジスタ読み出し
 uint8_t val = axp2101_read(0x69);
-// 2. マスク対象ビットをクリア
-val &= ~0x37;
-// 3. 手動制御モード + LED状態を書き込み
-val |= (0x30 | led_bits);
-// 4. レジスタ書き込み
+// 2. 予約ビット（bit3, 6, 7）のみ保持
+val &= 0xC8;
+// 3. 手動制御ビット（bit2=MAN, bit0=AUTO）をセット
+val |= 0x05;
+// 4. LED状態を bit5-4 に配置
+val |= (led_mode << 4);
+// 5. レジスタ書き込み
 axp2101_write(0x69, val);
 ```
 
-**bits\[2:0\] LED状態定義**
+**bits\[5:4\] LED状態定義**（`led_mode` の値）
 
-| bits\[2:0\] | 定数名 | 動作 | レジスタ値（手動制御込み） |
-|------------|--------|------|--------------------------|
-| `000` | `CHGLED_OFF` | 消灯 | `0x30` |
-| `001` | `CHGLED_1HZ` | 1Hz点滅 | `0x31` |
-| `010` | `CHGLED_2HZ` | 2Hz点滅 | `0x32` |
-| `011` | `CHGLED_4HZ` | 4Hz点滅 | `0x33` |
-| `101` | `CHGLED_ON` | 常時点灯 | `0x35` |
+| bits\[5:4\] | 定数名 | 動作 | レジスタ書き込み値（予約bit=0の場合） |
+|-------------|--------|------|--------------------------------------|
+| `00`（0） | `CHGLED_OFF` | 消灯 | `0x05` |
+| `01`（1） | `CHGLED_1HZ` | 1Hz点滅 | `0x15` |
+| `10`（2） | `CHGLED_4HZ` | 4Hz点滅 | `0x25` |
+| `11`（3） | `CHGLED_ON` | 常時点灯 | `0x35` |
+
+> **注意**: AXP2101に2Hzモードは存在しない。
 
 #### バッテリー・充電
 
@@ -241,7 +255,7 @@ Icom製インカム（PTTスイッチ内蔵）を使用する。
 
 | GPIO | 用途 |
 |------|------|
-| TBD | PTTボタン入力（Icomインカム Ring端子） |
+| 0 | PTTボタン入力（Icomインカム Ring端子、LOW=押下） |
 | TBD | I2S BCK（INMP441 / PCM5102） |
 | TBD | I2S WS（INMP441 / PCM5102） |
 | TBD | I2S DATA_IN（INMP441） |
@@ -541,12 +555,12 @@ AXP2101のチャージLEDをI2C（レジスタ0x69）で手動制御する。
 | システム状態 | LED動作 | レジスタ値 |
 |-------------|---------|-----------|
 | 初期化中（PMIC設定まで） | 消灯（制御不可） | — |
-| 起動シーケンス中（モデム起動〜タスク起動） | 1Hz点滅 | `0x31` |
+| 起動シーケンス中（モデム起動〜タスク起動） | 1Hz点滅 | `0x15` |
 | 待機中（全接続完了、PTT待ち） | 常時点灯 | `0x35` |
-| 受話中（他端末が送話中） | 2Hz点滅 | `0x32` |
-| 送話中（PTT押下、送話権取得済み） | 4Hz点滅 | `0x33` |
-| 接続エラー・再接続中 | 1Hz点滅 | `0x31` |
-| SIM未検出（停止） | 消灯 | `0x30` |
+| 受話中（他端末が送話中） | 1Hz点滅 | `0x15` |
+| 送話中（PTT押下、送話権取得済み） | 4Hz点滅 | `0x25` |
+| 接続エラー・再接続中 | 1Hz点滅 | `0x15` |
+| SIM未検出（停止） | 消灯 | `0x05` |
 
 ### 8.3 将来フェーズ（ディスプレイ追加時）
 
@@ -620,8 +634,7 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
-| `modem_task` | 7 | 4KB | SIM7080GへのATコマンド送受信、LTE-M接続管理 |
-| `tcp_task` | 8 | 4KB | 制御チャンネル（TCP）の送受信、再接続処理 |
+| `tcp_task` | 8 | 8KB | 制御チャンネル（TCP）の送受信、再接続処理 |
 | `udp_rx_task` | 10 | 4KB | 音声UDPパケット受信 → 受信キューへ投入 |
 | `udp_tx_task` | 10 | 4KB | 送信キューからパケット取り出し → UDP送信 |
 | `heartbeat_task` | 5 | 2KB | 25秒ごとにHEARTBEATをTCPへ送信 |
@@ -700,8 +713,7 @@ i2s_playback_task (Core1, 優先度15)
 ```
 ptt_task: PTTボタン押下検知（チャタリング除去: 20ms）
       ↓ EVT_PTT_PRESSED をイベントグループにセット
-state_machine_task: EVT_PTT_PRESSED を受信
-      ↓ PTT_START を ctrl_tx_queue へ
+      ↓ PTT_START を ctrl_tx_queue へ直接投入
 tcp_task: PTT_START をサーバーへ送信
       ↓ PTT_START_ACK 受信
 tcp_task: ctrl_rx_queue へ ACK を投入
@@ -715,8 +727,8 @@ udp_tx_task: 送信開始
 --- PTTボタン解放 ---
 
 ptt_task: ボタン解放検知
-      ↓ EVT_PTT_PRESSED をクリア
-state_machine_task: PTT_STOP を ctrl_tx_queue へ
+      ↓ EVT_PTT_PRESSED・EVT_FLOOR_GRANTED をクリア
+      ↓ PTT_STOP を ctrl_tx_queue へ直接投入
 i2s_capture_task: キャプチャ停止（キューをフラッシュ）
 tcp_task: PTT_STOP をサーバーへ送信
 ```
@@ -734,17 +746,15 @@ tcp_task: PTT_STOP をサーバーへ送信
 
 ### 10.7 モデム通信の分離
 
-SIM7080GへのATコマンドはUART2経由で行うが、`modem_task`が排他的に管理する。他のタスクがUARTに直接アクセスすることは禁止する。
+SIM7080GへのATコマンドはUART2経由で行うが、`modem`コンポーネントが排他的に管理する。他のタスクがUARTに直接アクセスすることは禁止する。
 
 ```
-tcp_task / udp_tx_task → ソケットAPI（SIM7080Gの内部TCP/UDPスタック）
-                              ↓ ATコマンド（UART2）
-                         modem_task が仲介
-                              ↓
+tcp_task / udp_tx_task → modem_tcp_open/send/recv/close()
+                              ↓ ATコマンド（UART2、at_cmd.c で排他制御）
                          SIM7080G モデム
 ```
 
-ただしSIM7080Gが提供するソケットAPIを使う場合、ATコマンドの送受信は`modem_task`がキュー経由で集約し、TCPとUDPの送受信が競合しないよう制御する。
+ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、TCP送受信が競合しないよう制御する。
 
 ## 11. 起動シーケンス
 
@@ -840,7 +850,7 @@ UARTを 921600 bps で開く
          └─ タイムアウト → リトライ（最大3回）→ 失敗で再起動
 ```
 
-> SIMカードが未挿入または未認識の場合はLED消灯（`0x30`）で停止し、再起動しない（ユーザーにSIM挿入を促す）。
+> SIMカードが未挿入または未認識の場合はLED消灯（`0x05`）で停止し、再起動しない（ユーザーにSIM挿入を促す）。
 
 ---
 
@@ -891,18 +901,17 @@ UARTを 921600 bps で開く
 全初期化完了後に各タスクを生成する。生成順は依存関係に従う。
 
 ```
-1. modem_task      (Core0, 優先度7)
-2. tcp_task        (Core0, 優先度8)
-3. udp_rx_task     (Core0, 優先度10)
-4. udp_tx_task     (Core0, 優先度10)
-5. heartbeat_task  (Core0, 優先度5)
-6. opus_encode_task (Core1, 優先度12)
-7. opus_decode_task (Core1, 優先度12)
-8. i2s_capture_task (Core1, 優先度15)  ← EVT_FLOOR_GRANTED待ちで休止
-9. i2s_playback_task (Core1, 優先度15) ← pcm_playback_queue待ちで休止
-10. ptt_task        (Core1, 優先度6)
-11. led_task        (Core1, 優先度3)
-12. state_machine_task (Core1, 優先度4)
+1. tcp_task        (Core0, 優先度8)
+2. udp_rx_task     (Core0, 優先度10)
+3. udp_tx_task     (Core0, 優先度10)
+4. heartbeat_task  (Core0, 優先度5)
+5. opus_encode_task (Core1, 優先度12)
+6. opus_decode_task (Core1, 優先度12)
+7. i2s_capture_task (Core1, 優先度15)  ← EVT_FLOOR_GRANTED待ちで休止
+8. i2s_playback_task (Core1, 優先度15) ← pcm_playback_queue待ちで休止
+9. ptt_task        (Core1, 優先度6)
+10. led_task        (Core1, 優先度3)
+11. state_machine_task (Core1, 優先度4)
 ```
 
 全タスク起動完了後にLEDを緑点灯に変更し、待機状態へ移行する。
@@ -911,16 +920,16 @@ UARTを 921600 bps で開く
 
 ### 11.9 LED による起動状態表示
 
-AXP2101 レジスタ0x69を手動制御モード（`CHGLED_MANUAL = 0x30`）で使用する。  
+AXP2101 レジスタ0x69を手動制御モード（bit2=MAN=1, bit0=AUTO=1）で使用する。  
 Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 
 | フェーズ | LED動作 | レジスタ値 |
 |----------|---------|-----------|
 | Phase 1〜2（ESP32・PMIC初期化中） | 消灯（制御不可） | — |
-| Phase 3〜7（起動シーケンス全体） | 1Hz点滅 | `0x31` |
+| Phase 3〜7（起動シーケンス全体） | 1Hz点滅 | `0x15` |
 | 待機状態（全接続完了） | 常時点灯 | `0x35` |
-| SIM未検出エラー（停止） | 消灯 | `0x30` |
-| サーバー接続失敗（リトライ中） | 1Hz点滅 | `0x31` |
+| SIM未検出エラー（停止） | 消灯 | `0x05` |
+| サーバー接続失敗（リトライ中） | 1Hz点滅 | `0x15` |
 
 ---
 
@@ -1025,7 +1034,7 @@ PTTボタン押下
        │
        ├─ PTT_START_DENY受信 → 送話権取得失敗（他端末送話中）
        │    → EVT_FLOOR_BUSY をセット
-       │    → LEDを2Hz点滅（受話中と同表示）
+       │    → LEDを1Hz点滅（受話中と同表示）
        │    → PTTボタン解放まで待機（再試行なし）
        │
        └─ タイムアウト（3秒）→ サーバー無応答
@@ -1094,7 +1103,7 @@ AT+CEREG URCで切断通知 or TCP切断をトリガーに検知
   │    → モデムレベルの切断なら TCP 接続自体が失敗し続ける
   │
   └─ TCP接続が5回連続失敗
-       → modem_task がLTE-M再接続を試みる
+       → tcp_task が modem_connect() を呼び出してLTE-M再接続を試みる
             → AT+CGACT=0,1 → AT+CGACT=1,1（PDP再有効化）
             → 改善しなければモデムをリセット（PWRキー制御）
 ```
