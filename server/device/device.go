@@ -32,20 +32,22 @@ var (
 )
 
 // Register は空きセッションID（1〜10）を割り当てて端末を登録する。
-// 満杯の場合は nil を返す。
-func Register(deviceID uint32, groupID uint8, conn net.Conn) *Device {
+// 同一deviceIDが再接続した場合は既存エントリを上書きし、古い net.Conn を返す
+// （呼び出し元で Close すること）。満杯の場合は (nil, nil) を返す。
+func Register(deviceID uint32, groupID uint8, conn net.Conn) (*Device, net.Conn) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	// 既登録の同一device_idは上書き（再接続）
 	for _, d := range devices {
 		if d.DeviceID == deviceID {
+			oldConn := d.Conn
 			d.GroupID = groupID
 			d.Conn = conn
 			d.Status = StatusStandby
 			d.ConnectedAt = time.Now()
 			d.LastSeen = time.Now()
-			return d
+			return d, oldConn
 		}
 	}
 
@@ -62,10 +64,19 @@ func Register(deviceID uint32, groupID uint8, conn net.Conn) *Device {
 				LastSeen:    time.Now(),
 			}
 			devices[sid] = d
-			return d
+			return d, nil
 		}
 	}
-	return nil // 満杯
+	return nil, nil // 満杯
+}
+
+// OwnedBy は指定セッションの現在の Conn が conn と同一かどうかを返す。
+// 再接続で置き換えられた古いgoroutineがRemoveを誤って呼ばないためのガード。
+func OwnedBy(sessionID uint8, conn net.Conn) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	d, ok := devices[sessionID]
+	return ok && d.Conn == conn
 }
 
 // UpdateLastSeen は端末の最終応答時刻を更新する

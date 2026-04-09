@@ -55,10 +55,16 @@ func handleTCPConn(conn net.Conn) {
 		return
 	}
 
-	dev := device.Register(deviceID, groupID, conn)
+	dev, oldConn := device.Register(deviceID, groupID, conn)
 	if dev == nil {
 		log.Printf("TCP session full, rejecting device 0x%08X", deviceID)
 		return
+	}
+	// 再接続の場合は古いコネクションを強制Close（古いgoroutineを終了させる）
+	if oldConn != nil {
+		log.Printf("TCP session %d: closing old connection for reconnecting device 0x%08X",
+			dev.SessionID, deviceID)
+		oldConn.Close()
 	}
 	monitor.Log(monitor.LevelInfo, fmt.Sprintf("0x%08X", deviceID),
 		"HELLO group=%d session=%d addr=%s", groupID, dev.SessionID, conn.RemoteAddr())
@@ -186,6 +192,11 @@ func handleTCPConn(conn net.Conn) {
 	}
 
 cleanup:
+	// 再接続により別goroutineがこのセッションを引き継いだ場合はRemoveしない
+	if !device.OwnedBy(dev.SessionID, conn) {
+		log.Printf("TCP session %d: stale goroutine exiting (conn replaced by reconnect)", dev.SessionID)
+		return
+	}
 	// 送話中のまま切断された場合は送話権を解放
 	if floor.Holder(dev.GroupID) == dev.SessionID {
 		floor.Release(dev.GroupID, dev.SessionID)
