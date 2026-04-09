@@ -1,0 +1,5 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=4.4.0"
+  esp-libopus:
+    git: https://github.com/kahrendt/esp-libopus.git

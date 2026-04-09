@@ -56,11 +56,11 @@ void app_main(void)
     xTaskCreatePinnedToCore(udp_tx_task,    "udp_tx",    4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 2048, NULL, 5,  NULL, 0);
 
-    // Core 1: 音声系
-    xTaskCreatePinnedToCore(opus_encode_task,  "opus_enc",  8192, NULL, 12, NULL, 1);
-    xTaskCreatePinnedToCore(opus_decode_task,  "opus_dec",  8192, NULL, 12, NULL, 1);
-    xTaskCreatePinnedToCore(i2s_capture_task,  "i2s_cap",   4096, NULL, 15, NULL, 1);
-    xTaskCreatePinnedToCore(i2s_playback_task, "i2s_play",  4096, NULL, 15, NULL, 1);
+    // Core 1: 音声系（Opusは内部バッファが大きいため32KBが必要）
+    xTaskCreatePinnedToCore(opus_encode_task,  "opus_enc",  32768, NULL, 12, NULL, 1);
+    xTaskCreatePinnedToCore(opus_decode_task,  "opus_dec",  32768, NULL, 12, NULL, 1);
+    xTaskCreatePinnedToCore(i2s_capture_task,  "i2s_cap",    4096, NULL, 15, NULL, 1);
+    xTaskCreatePinnedToCore(i2s_playback_task, "i2s_play",   4096, NULL, 15, NULL, 1);
     xTaskCreatePinnedToCore(ptt_task,          "ptt",       2048, NULL, 6,  NULL, 1);
     xTaskCreatePinnedToCore(led_task,          "led",       2048, NULL, 3,  NULL, 1);
     xTaskCreatePinnedToCore(state_machine_task,"state",     4096, NULL, 4,  NULL, 1);

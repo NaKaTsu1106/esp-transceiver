@@ -46,9 +46,9 @@ func BroadcastDeviceUpdate(sessionID uint8) {
 	defaultHub.broadcast(deviceListJSON())
 }
 
-// BroadcastAudio は音声データをモニタリング用に配信する（Step 9で実装）。
-func BroadcastAudio(groupID uint8, deviceID uint32, seq uint16, opusFrame []byte) {
-	// TODO: Step 9で音声モニタリング実装
+// BroadcastAudio は音声データをモニタリング用に配信する。
+func BroadcastAudio(groupID, sessionID uint8, seq, timestamp uint16, opusFrame []byte) {
+	broadcastAudioFrame(groupID, sessionID, seq, timestamp, opusFrame)
 }
 
 // ServeSSE は Server-Sent Events のHTTPハンドラー。

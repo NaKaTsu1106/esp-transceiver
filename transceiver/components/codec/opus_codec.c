@@ -1,35 +1,87 @@
 #include "opus_codec.h"
+#include "state_machine.h"
+#include "config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "opus.h"
+#include <string.h>
 
 static const char *TAG = "opus_codec";
 
+static OpusEncoder *s_encoder = NULL;
+static OpusDecoder *s_decoder = NULL;
+
 esp_err_t opus_codec_init(void)
 {
-    // TODO: Step 6で実装（8kHz, モノラル, 8kbps, esp-libopus使用）
-    ESP_LOGI(TAG, "opus_codec_init: stub");
+    int err;
+
+    // エンコーダ初期化（8kHz, モノラル, VoIP用途）
+    s_encoder = opus_encoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS,
+                                     OPUS_APPLICATION_VOIP, &err);
+    if (err != OPUS_OK || s_encoder == NULL) {
+        ESP_LOGE(TAG, "opus_encoder_create failed: %s", opus_strerror(err));
+        return ESP_FAIL;
+    }
+    opus_encoder_ctl(s_encoder, OPUS_SET_BITRATE(CONFIG_OPUS_BITRATE));
+    opus_encoder_ctl(s_encoder, OPUS_SET_COMPLEXITY(3));    // ESP32省電力設定
+    opus_encoder_ctl(s_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+
+    // デコーダ初期化（Step 7で使用）
+    s_decoder = opus_decoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS, &err);
+    if (err != OPUS_OK || s_decoder == NULL) {
+        ESP_LOGE(TAG, "opus_decoder_create failed: %s", opus_strerror(err));
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "opus_codec_init: OK (8kHz mono 8kbps complexity=3)");
     return ESP_OK;
 }
 
 int opus_codec_encode(const int16_t *pcm, size_t samples,
                        uint8_t *out, size_t out_len)
 {
-    // TODO: Step 6で実装
-    return 0;
+    if (s_encoder == NULL) return OPUS_INTERNAL_ERROR;
+    return opus_encode(s_encoder, pcm, (int)samples, out, (opus_int32)out_len);
 }
 
 int opus_codec_decode(const uint8_t *in, size_t in_len,
                        int16_t *pcm, size_t max_samples)
 {
-    // TODO: Step 7で実装
-    return 0;
+    if (s_decoder == NULL) return OPUS_INTERNAL_ERROR;
+    return opus_decode(s_decoder, in, (opus_int32)in_len, pcm, (int)max_samples, 0);
 }
 
 void opus_encode_task(void *arg)
 {
-    // TODO: Step 6で実装
-    vTaskDelete(NULL);
+    ESP_LOGI(TAG, "opus_encode_task: started");
+
+    pcm_frame_t   pcm_frame;
+    encoded_frame_t enc_frame;
+    uint16_t seq = 0;
+    uint32_t timestamp_ms = 0;
+
+    while (1) {
+        if (xQueueReceive(g_pcm_encode_queue, &pcm_frame, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        int encoded_len = opus_codec_encode(pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES,
+                                             enc_frame.data, sizeof(enc_frame.data));
+        if (encoded_len < 0) {
+            ESP_LOGW(TAG, "opus_encode failed: %s", opus_strerror(encoded_len));
+            continue;
+        }
+
+        enc_frame.len          = encoded_len;
+        enc_frame.seq          = seq++;
+        enc_frame.timestamp_ms = (uint16_t)(timestamp_ms & 0xFFFF);
+        timestamp_ms          += CONFIG_OPUS_FRAME_MS;
+
+        if (xQueueSend(g_encoded_tx_queue, &enc_frame, 0) != pdTRUE) {
+            ESP_LOGD(TAG, "encoded_tx_queue full, dropping frame");
+        }
+    }
 }
 
 void opus_decode_task(void *arg)

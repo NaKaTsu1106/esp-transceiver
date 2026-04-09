@@ -12,6 +12,7 @@ type Config struct {
 	HeartbeatTimeout int // 秒
 	LogMaxEntries    int
 	LogDir           string // ログ保存ディレクトリ（空文字でファイル出力無効）
+	Domain           string // HTTPS用ドメイン名（空文字でHTTP動作）
 }
 
 func Load() *Config {
@@ -22,6 +23,7 @@ func Load() *Config {
 		HeartbeatTimeout: getEnvInt("HEARTBEAT_TIMEOUT", 75),
 		LogMaxEntries:    getEnvInt("LOG_MAX_ENTRIES", 1000),
 		LogDir:           getEnvStr("LOG_DIR", "/var/log/transceiver"),
+		Domain:           getEnvStr("DOMAIN", ""),
 	}
 }
 

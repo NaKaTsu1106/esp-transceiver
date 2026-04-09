@@ -1,0 +1,21 @@
+dependencies:
+  esp-libopus:
+    component_hash: fa6814db60a2b42deff1edbce88faa23c3d9ff59f3fec7c1db4a8a40bb2db3b8
+    dependencies:
+    - name: idf
+      version: '>=4.4'
+    source:
+      git: https://github.com/kahrendt/esp-libopus.git
+      path: .
+      type: git
+    version: 357ae8f29d7b48f2d27ad06278a1ef493f6434f2
+  idf:
+    source:
+      type: idf
+    version: 6.0.0
+direct_dependencies:
+- esp-libopus
+- idf
+manifest_hash: 4460d8c3e7e4f07bbf07ef6d32664ace547b11e3fb7343a69deca17bcafbf79e
+target: esp32s3
+version: 3.0.0

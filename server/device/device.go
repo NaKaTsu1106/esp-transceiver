@@ -127,11 +127,19 @@ func AllInGroup(groupID uint8) []*Device {
 }
 
 func UpdateUDPAddr(sessionID uint8, addr *net.UDPAddr) {
-	// TODO: Step 6で実装
+	mu.Lock()
+	defer mu.Unlock()
+	if d, ok := devices[sessionID]; ok {
+		d.UDPAddr = addr
+	}
 }
 
 func GetUDPAddr(sessionID uint8) *net.UDPAddr {
-	// TODO: Step 6で実装
+	mu.RLock()
+	defer mu.RUnlock()
+	if d, ok := devices[sessionID]; ok {
+		return d.UDPAddr
+	}
 	return nil
 }
 

@@ -39,6 +39,22 @@
   .status-receiving    { background: #9e6a0326; color: #d29922; border: 1px solid #9e6a0366; }
   .status-disconnected { background: #b62324;   color: #f85149; border: 1px solid #f8514966; }
 
+  /* 音声モニター */
+  #audio-monitor { flex-shrink: 0; }
+  .audio-controls { display: flex; align-items: center; gap: 12px; padding: 10px 16px; flex-wrap: wrap; }
+  .monitor-btn { border: none; border-radius: 4px; padding: 4px 14px; font-size: 12px; cursor: pointer; font-weight: 600; transition: all 0.15s; }
+  .monitor-btn.start  { background: #238636; color: #fff; }
+  .monitor-btn.start:hover { background: #2ea043; }
+  .monitor-btn.stop   { background: #b62324; color: #fff; }
+  .monitor-btn.stop:hover  { background: #f85149; }
+  .monitor-btn:disabled { opacity: 0.4; cursor: default; }
+  .group-sel { background: #21262d; border: 1px solid #30363d; color: #e6edf3; border-radius: 4px; padding: 3px 8px; font-size: 12px; }
+  #audio-status { font-size: 12px; color: #8b949e; }
+  #audio-status.active { color: #3fb950; }
+  .vu-wrap { display: flex; align-items: center; gap: 6px; }
+  #vu-bar { width: 120px; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; border: 1px solid #30363d; }
+  #vu-fill { height: 100%; width: 0%; background: #3fb950; border-radius: 4px; transition: width 0.05s; }
+
   /* ログパネル */
   #logs { flex: 1; min-height: 0; }
   .log-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -95,6 +111,31 @@
           <tr id="no-devices"><td colspan="6">端末未接続</td></tr>
         </tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- 音声モニター -->
+  <section id="audio-monitor">
+    <div class="section-header">
+      <h2>音声モニター</h2>
+      <span class="badge" id="audio-badge">停止中</span>
+    </div>
+    <div class="audio-controls">
+      <label style="font-size:12px;color:#8b949e;">グループ</label>
+      <select class="group-sel" id="audio-group">
+        <option value="0">0 (全体)</option>
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+      <button class="monitor-btn start" id="btn-start" onclick="startMonitor()">モニター開始</button>
+      <button class="monitor-btn stop"  id="btn-stop"  onclick="stopMonitor()" disabled>停止</button>
+      <span id="audio-status">--</span>
+      <div class="vu-wrap">
+        <span style="font-size:11px;color:#484f58;">レベル</span>
+        <div id="vu-bar"><div id="vu-fill"></div></div>
+      </div>
     </div>
   </section>
 
@@ -219,6 +260,122 @@ function clearLogs() {
 }
 
 connect();
+
+// =====================================================================
+// 音声モニター
+// =====================================================================
+let audioCtx = null;
+let audioDecoder = null;
+let audioES = null;
+let nextPlayTime = 0;
+let audioGroup = 1;
+let frameCount = 0;
+let vuTimer = null;
+
+function startMonitor() {
+  audioGroup = parseInt(document.getElementById('audio-group').value);
+
+  // AudioContext 初期化（ユーザー操作が必要）
+  if (!audioCtx) {
+    audioCtx = new AudioContext({ sampleRate: 8000 });
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  nextPlayTime = audioCtx.currentTime + 0.1;
+
+  // WebCodecs AudioDecoder
+  if (!window.AudioDecoder) {
+    setAudioStatus('WebCodecs 非対応ブラウザです (Chrome 94+ 必要)', false);
+    return;
+  }
+  if (audioDecoder) { audioDecoder.close(); audioDecoder = null; }
+
+  audioDecoder = new AudioDecoder({
+    output: (audioData) => {
+      const n = audioData.numberOfFrames;
+      const pcm = new Float32Array(n);
+      audioData.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
+      audioData.close();
+
+      const buf = audioCtx.createBuffer(1, n, 8000);
+      buf.copyToChannel(pcm, 0);
+
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      const now = audioCtx.currentTime;
+      if (nextPlayTime < now) nextPlayTime = now + 0.05;
+      src.start(nextPlayTime);
+      nextPlayTime += n / 8000;
+
+      // VUメーター
+      let peak = 0;
+      for (let i = 0; i < pcm.length; i++) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+      document.getElementById('vu-fill').style.width = Math.min(peak * 200, 100) + '%';
+    },
+    error: (e) => setAudioStatus('デコードエラー: ' + e.message, false)
+  });
+
+  audioDecoder.configure({ codec: 'opus', sampleRate: 8000, numberOfChannels: 1 });
+
+  // SSE 接続
+  if (audioES) { audioES.close(); audioES = null; }
+  audioES = new EventSource('/audio/events');
+  frameCount = 0;
+
+  audioES.onopen = () => {
+    setAudioStatus('受信中... (Group ' + audioGroup + ')', true);
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    document.getElementById('audio-badge').textContent = '受信中';
+    document.getElementById('audio-badge').style.color = '#3fb950';
+  };
+
+  audioES.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'audio_init') return;
+      if (msg.type !== 'audio') return;
+      // グループフィルター（0=全体）
+      if (audioGroup !== 0 && msg.group !== audioGroup) return;
+      if (!audioDecoder || audioDecoder.state === 'closed') return;
+
+      const raw = atob(msg.data);
+      const opus = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) opus[i] = raw.charCodeAt(i);
+
+      frameCount++;
+      setAudioStatus('受信中... (Group ' + audioGroup + ') ' + frameCount + ' frames', true);
+
+      audioDecoder.decode(new EncodedAudioChunk({
+        type: 'key',
+        timestamp: msg.ts * 1000, // ms → μs
+        data: opus
+      }));
+    } catch (_) {}
+  };
+
+  audioES.onerror = () => {
+    setAudioStatus('SSE 切断', false);
+    stopMonitor();
+  };
+}
+
+function stopMonitor() {
+  if (audioES) { audioES.close(); audioES = null; }
+  if (audioDecoder && audioDecoder.state !== 'closed') { audioDecoder.close(); audioDecoder = null; }
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  document.getElementById('audio-badge').textContent = '停止中';
+  document.getElementById('audio-badge').style.color = '';
+  document.getElementById('vu-fill').style.width = '0%';
+  setAudioStatus('--', false);
+}
+
+function setAudioStatus(msg, active) {
+  const el = document.getElementById('audio-status');
+  el.textContent = msg;
+  el.className = active ? 'active' : '';
+}
 </script>
 </body>
 </html>

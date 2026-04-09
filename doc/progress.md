@@ -1,6 +1,6 @@
 # 実装進捗
 
-最終更新: 2026-04-08
+最終更新: 2026-04-09
 
 ## ステップ一覧
 
@@ -11,7 +11,7 @@
 | Step 3 | モデム起動・LTE-M接続 | ✅ 完了 |
 | Step 4 | TCPサーバー（Go）+ TCP接続（デバイス） | ✅ 完了 |
 | Step 5 | PTT制御 | ⬜ 未着手 |
-| Step 6 | 音声送信パイプライン | ⬜ 未着手 |
+| Step 6 | 音声送信パイプライン | ✅ 完了 |
 | Step 7 | 音声受信パイプライン | ⬜ 未着手 |
 | Step 8 | エラー処理・再接続 | ⬜ 未着手 |
 | Step 9 | デバッグモニター | ⬜ 未着手 |
@@ -67,6 +67,34 @@ web/static/  （Step 9で作成）
 ### 備考
 - 全コンポーネントはスタブ（空実装）。各ステップで順次実装する
 - `config.h` の `CONFIG_SERVER_IP` は実際のVPS IPに変更が必要
+
+---
+
+## Step 6: 音声送信パイプライン ✅
+
+### 完了タスク
+
+- [x] `config.h`: I2S GPIO ピン定義追加（BCK=12, WS=13, DIN=11, DOUT=10）
+- [x] `state_machine.h`: `pcm_frame_t`, `encoded_frame_t`, `g_pcm_encode_queue`, `g_encoded_tx_queue` 追加
+- [x] `state_machine.c`: 音声キュー作成（`state_machine_init()`）
+- [x] `i2s_capture.c`: INMP441実装（8kHz, 32bit slot, 16bit変換）
+- [x] `audio/CMakeLists.txt`: `driver` → `esp_driver_i2s`, `state` 追加
+- [x] `opus_codec.c`: エンコーダ実装（8kbps, complexity=3, `opus_encode_task`）
+- [x] `codec/CMakeLists.txt`: `espressif__esp-libopus`, `state` 追加
+- [x] `codec/idf_component.yml`: esp-libopus マネージドコンポーネント依存追加
+- [x] `modem.h/c`: `modem_udp_open()`, `modem_udp_send()`, `modem_udp_close()` 実装（コネクションID=1）
+- [x] `udp_client.c`: `udp_tx_task` 実装（EVT_CONNECTED待機、キープアライブ25s）
+
+### 音声パイプライン（送信）
+
+```
+i2s_capture_task → [g_pcm_encode_queue] → opus_encode_task → [g_encoded_tx_queue] → udp_tx_task
+```
+
+### 備考
+- I2S GPIO ピン番号はプレースホルダー。実機に合わせて `config.h` を変更すること
+- `udp_tx_task` は `EVT_FLOOR_GRANTED` が立っているフレームのみ送信
+- `i2s_capture_task` は常時録音するが、`EVT_FLOOR_GRANTED` 時のみキューへプッシュ
 
 ---
 

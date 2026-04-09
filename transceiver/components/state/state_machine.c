@@ -11,6 +11,8 @@ static const char *TAG = "state_machine";
 EventGroupHandle_t g_system_events  = NULL;
 QueueHandle_t      g_ctrl_tx_queue  = NULL;
 QueueHandle_t      g_ctrl_rx_queue  = NULL;
+QueueHandle_t      g_pcm_encode_queue = NULL;
+QueueHandle_t      g_encoded_tx_queue = NULL;
 
 void state_machine_init(void)
 {
@@ -22,6 +24,12 @@ void state_machine_init(void)
 
     g_ctrl_rx_queue = xQueueCreate(CONFIG_CTRL_RX_QUEUE_LEN, sizeof(ctrl_msg_t));
     configASSERT(g_ctrl_rx_queue);
+
+    g_pcm_encode_queue = xQueueCreate(CONFIG_PCM_ENCODE_QUEUE_LEN, sizeof(pcm_frame_t));
+    configASSERT(g_pcm_encode_queue);
+
+    g_encoded_tx_queue = xQueueCreate(CONFIG_ENCODED_TX_QUEUE_LEN, sizeof(encoded_frame_t));
+    configASSERT(g_encoded_tx_queue);
 
     ESP_LOGI(TAG, "state_machine_init: OK");
 }

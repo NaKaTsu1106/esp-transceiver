@@ -21,6 +21,25 @@ extern EventGroupHandle_t g_system_events;
 extern QueueHandle_t g_ctrl_tx_queue;
 extern QueueHandle_t g_ctrl_rx_queue;
 
+// 音声パイプラインキュー
+// g_pcm_encode_queue:  i2s_capture_task → opus_encode_task (pcm_frame_t)
+// g_encoded_tx_queue:  opus_encode_task → udp_tx_task       (encoded_frame_t)
+extern QueueHandle_t g_pcm_encode_queue;
+extern QueueHandle_t g_encoded_tx_queue;
+
+// PCMフレーム（20ms @ 8kHz = 160サンプル）
+typedef struct {
+    int16_t samples[160];
+} pcm_frame_t;
+
+// エンコード済みフレーム
+typedef struct {
+    uint8_t  data[64];
+    int      len;
+    uint16_t seq;
+    uint16_t timestamp_ms;
+} encoded_frame_t;
+
 void state_machine_init(void);
 void state_set(EventBits_t bits);
 void state_clear(EventBits_t bits);

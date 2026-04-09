@@ -20,8 +20,7 @@ func main() {
 
 	go srv.RunWSServer(cfg)
 
-	// TODO: Step 6でUDPサーバー起動
-	// go srv.RunUDPServer(cfg)
+	go srv.RunUDPServer(cfg)
 
 	srv.RunTCPServer(cfg)
 }

@@ -16,6 +16,7 @@ static const char *TAG = "modem";
 
 #define MODEM_RETRY_MAX  3
 #define TCP_CONN_ID      0   // SIM7080G コネクションID固定
+#define UDP_CONN_ID      1   // UDP用コネクションID
 
 // ATコマンド排他ミューテックス（tcp_task からも使用）
 static SemaphoreHandle_t s_at_mutex = NULL;
@@ -430,5 +431,97 @@ esp_err_t modem_tcp_close(void)
     esp_err_t ret = at_cmd_send("AT+CACLOSE=0", "OK", 5000);
     xSemaphoreGive(s_at_mutex);
     ESP_LOGI(TAG, "TCP closed");
+    return ret;
+}
+
+// ---------- UDP ソケット API ----------
+
+esp_err_t modem_udp_open(const char *host, uint16_t port)
+{
+    xSemaphoreTake(s_at_mutex, portMAX_DELAY);
+
+    // 既存コネクションを念のためクローズ
+    char close_cmd[32];
+    snprintf(close_cmd, sizeof(close_cmd), "AT+CACLOSE=%d", UDP_CONN_ID);
+    at_cmd_send(close_cmd, "OK", 3000);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // AT+CAOPEN=<connectID>,<pdpidx>,"UDP","<host>",<port>
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "AT+CAOPEN=%d,0,\"UDP\",\"%s\",%u",
+             UDP_CONN_ID, host, port);
+
+    esp_err_t ret = ESP_FAIL;
+    char resp[128];
+    if (at_cmd_query(cmd, resp, sizeof(resp), 15000) == ESP_OK) {
+        char expect[16];
+        snprintf(expect, sizeof(expect), "+CAOPEN: %d,0", UDP_CONN_ID);
+        if (strstr(resp, expect)) {
+            ESP_LOGI(TAG, "UDP open OK: %s:%u", host, port);
+            ret = ESP_OK;
+        } else {
+            ESP_LOGE(TAG, "UDP open failed: %s", resp);
+        }
+    } else {
+        ESP_LOGE(TAG, "UDP open timeout");
+    }
+
+    xSemaphoreGive(s_at_mutex);
+    return ret;
+}
+
+esp_err_t modem_udp_send(const uint8_t *data, size_t len)
+{
+    xSemaphoreTake(s_at_mutex, portMAX_DELAY);
+
+    // AT+CASEND=<idx>,<len>
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "AT+CASEND=%d,%zu", UDP_CONN_ID, len);
+
+    char resp[64];
+    esp_err_t ret = at_cmd_query(cmd, resp, sizeof(resp), 5000);
+    if (ret != ESP_OK || !strstr(resp, "> ")) {
+        ESP_LOGE(TAG, "UDP send prompt not received: %s", resp);
+        xSemaphoreGive(s_at_mutex);
+        return ESP_FAIL;
+    }
+
+    // データ本体を生バイトで送信
+    at_cmd_write_raw(data, len);
+
+    // "OK" 待ち
+    memset(resp, 0, sizeof(resp));
+    size_t pos = 0;
+    ret = ESP_FAIL;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+    while (xTaskGetTickCount() < deadline && pos < sizeof(resp) - 1) {
+        int n = uart_read_bytes(CONFIG_MODEM_UART_NUM,
+                                (uint8_t *)(resp + pos),
+                                sizeof(resp) - pos - 1,
+                                pdMS_TO_TICKS(50));
+        if (n > 0) {
+            pos += n;
+            resp[pos] = '\0';
+            if (strstr(resp, "OK\r\n") || strstr(resp, "OK\n")) { ret = ESP_OK; break; }
+            if (strstr(resp, "ERROR")) break;
+        }
+    }
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "UDP send failed: %s", resp);
+    }
+
+    xSemaphoreGive(s_at_mutex);
+    return ret;
+}
+
+esp_err_t modem_udp_close(void)
+{
+    xSemaphoreTake(s_at_mutex, portMAX_DELAY);
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "AT+CACLOSE=%d", UDP_CONN_ID);
+    esp_err_t ret = at_cmd_send(cmd, "OK", 5000);
+    xSemaphoreGive(s_at_mutex);
+    ESP_LOGI(TAG, "UDP closed");
     return ret;
 }

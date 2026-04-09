@@ -14,3 +14,8 @@ esp_err_t modem_tcp_send(const uint8_t *data, size_t len);
 // ちょうど len バイト受信。受信したバイト数を *out_len に格納。
 esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t timeout_ms);
 esp_err_t modem_tcp_close(void);
+
+// UDP ソケット API（コネクションID=1 固定）
+esp_err_t modem_udp_open(const char *host, uint16_t port);
+esp_err_t modem_udp_send(const uint8_t *data, size_t len);
+esp_err_t modem_udp_close(void);
