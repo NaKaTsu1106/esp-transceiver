@@ -2,7 +2,8 @@
 
 **デバイス**: LilyGO T-SIM7080G-S3  
 **作成日**: 2026-04-07  
-**バージョン**: 0.1.0 (Draft)
+**更新日**: 2026-04-11  
+**バージョン**: 0.2.0
 
 ---
 
@@ -82,14 +83,27 @@ LTE-Mネットワークを介して複数端末間でリアルタイム音声通
 | MCU | ESP32-S3（Xtensa 32-bit LX7 デュアルコア、最大240MHz） |
 | モジュール | ESP32-S3-WROOM-1-N16R8 |
 | フラッシュ | 16MB SPI Flash |
-| PSRAM | 8MB Octal SPI PSRAM（GPIO35〜37は予約済み、使用禁止） |
+| PSRAM | 8MB Octal SPI PSRAM（OPI 80MHz、GPIO35〜37は予約済み・使用禁止） |
 | 内蔵SRAM | 512KB |
 | Wi-Fi / BT | 2.4GHz Wi-Fi 4、Bluetooth 5 LE（本プロジェクトでは未使用） |
 | モデム | SIMCom SIM7080G |
 | 対応通信規格 | LTE-M（Cat-M1）、NB-IoT |
 | 使用通信規格 | LTE-M（Cat-M1）のみ |
 | SIMカード | nanoSIM（SORACOM SIM） |
-| 開発フレームワーク | ESP-IDF |
+| 開発フレームワーク | ESP-IDF v6.0 |
+
+#### PSRAM 設定
+
+Opus コーデックの疑似スタック（エンコーダ 120KB + デコーダ 120KB = 計 240KB）を PSRAM に確保するため、
+OPI PSRAM を有効化する。内部 HEAP のみでは 2 つの疑似スタックを同時確保できずクラッシュする。
+
+| 設定 | 値 |
+|------|----|
+| `CONFIG_SPIRAM` | 有効 |
+| `CONFIG_SPIRAM_MODE_OCT` | 有効（OPI 8MB） |
+| `CONFIG_SPIRAM_SPEED_80M` | 有効（80MHz） |
+| `CONFIG_SPIRAM_BOOT_INIT` | 有効（起動時初期化） |
+| 割り当て方式 | `CAPS_ALLOC`（`malloc()` は内部RAMのまま、`heap_caps_malloc(MALLOC_CAP_SPIRAM)` でのみ PSRAM を使用） |
 
 ### 3.2 電源管理IC（PMIC）
 
@@ -184,7 +198,7 @@ axp2101_write(0x69, val);
 
 | ピン名 | GPIO | 機能 |
 |--------|------|------|
-| PWR | GPIO 41 | 電源制御（500ms以上LOWでモデム起動） |
+| PWR | GPIO 41 | 電源制御（トランジスタ反転: HIGH=PWRKEY アサート） |
 | DTR | GPIO 42 | Data Terminal Ready |
 | RI | GPIO 3 | Ring Indicator |
 
@@ -196,26 +210,15 @@ axp2101_write(0x69, val);
 
 ### 3.4 音声入出力
 
-#### 接続ヘッドセット
-
-Icom製インカム（PTTスイッチ内蔵）を使用する。
-
-| 項目 | 内容 |
-|------|------|
-| ヘッドセット | Icom製インカム（PTTスイッチ内蔵） |
-| マイクジャック | 2.5mm 3極（TRS）: Tip=マイク音声 / Ring=PTT（GNDショートでアクティブ） / Sleeve=GND（要実機確認） |
-| スピーカージャック | 3.5mm 2極（TS）: Tip=音声 / Sleeve=GND |
-| PTT検出 | RingをESP32 GPIOに接続（LOW検出） |
-
-#### 試作フェーズ
+#### 試作フェーズ（現フェーズ）
 
 | 項目 | 内容 |
 |------|------|
 | マイク | INMP441（I2S接続 MEMSマイク） |
 | スピーカー出力 | PCM5102（I2S DAC）→ 3.5mmジャック経由 |
-| PTT | Icomインカムの2.5mmジャック Ring端子 → GPIO |
+| PTT | Icomインカムの2.5mmジャック Ring端子 → GPIO 0 |
 
-#### 最終フェーズ
+#### 将来フェーズ
 
 | 項目 | 内容 |
 |------|------|
@@ -228,7 +231,7 @@ Icom製インカム（PTTスイッチ内蔵）を使用する。
 
 | 項目 | 内容 |
 |------|------|
-| PTTボタン | Icomインカム内蔵PTTスイッチ（2.5mmジャック Ring端子 → GPIO） |
+| PTTボタン | Icomインカム内蔵PTTスイッチ（2.5mmジャック Ring端子 → GPIO 0） |
 | グループ切替 | 現フェーズはなし。グループIDは `config.h` に定数として書き込んだ固定値を使用 |
 | LED（状態表示） | AXP2101チャージLED（I2Cレジスタ0x69で手動制御）。詳細はセクション8.2参照 |
 
@@ -251,15 +254,17 @@ Icom製インカム（PTTスイッチ内蔵）を使用する。
 | 41 | SIM7080G PWR |
 | 42 | SIM7080G DTR |
 
-#### アプリケーション用GPIO（割り当て予定）
+#### アプリケーション用GPIO
 
 | GPIO | 用途 |
 |------|------|
 | 0 | PTTボタン入力（Icomインカム Ring端子、LOW=押下） |
-| TBD | I2S BCK（INMP441 / PCM5102） |
-| TBD | I2S WS（INMP441 / PCM5102） |
-| TBD | I2S DATA_IN（INMP441） |
-| TBD | I2S DATA_OUT（PCM5102） |
+| 9 | I2S RX DIN（INMP441マイク データ） |
+| 10 | I2S RX WS（INMP441マイク ワードセレクト） |
+| 11 | I2S RX BCK（INMP441マイク ビットクロック） |
+| 16 | I2S TX DOUT（PCM5102 DAC データ） |
+| 17 | I2S TX WS（PCM5102 DAC ワードセレクト） |
+| 18 | I2S TX BCK（PCM5102 DAC ビットクロック） |
 
 ---
 
@@ -302,14 +307,32 @@ AT+CGDCONT=1,"IP","soracom.io"  → OK
 // 認証設定（PAP: type=1）
 AT+CGAUTH=1,1,"sora","sora"     → OK
 
+// PSM（Power Saving Mode）無効化 ← 常時受信待機のため必須
+AT+CPSMS=0        → OK
+
+// eDRX（Extended Discontinuous Reception）無効化 ← 受信遅延防止
+AT+CEDRXS=0       → OK
+
 // ネットワーク登録待機
 AT+CEREG?         → +CEREG: 0,1  // 0,1=登録済み / 0,5=ローミング登録済み
+
+// GPRS アタッチ確認
+AT+CGATT=1        → OK
 
 // PDPコンテキスト有効化
 AT+CGACT=1,1      → OK
 
+// サーバー返却APNの確認（接続安定性向上）
+AT+CGNAPN         → OK
+
+// アプリネットワーク設定
+AT+CNCFG=0,1,"soracom.io","sora","sora",1  → OK
+
+// アプリネットワーク有効化（+APP PDP: 0,ACTIVE URC を待つ）
+AT+CNACT=0,1      → OK  → URC: +APP PDP: 0,ACTIVE
+
 // IPアドレス確認
-AT+CGPADDR=1      → +CGPADDR: 1,"10.x.x.x"
+AT+CGPADDR=1      → +CGPADDR: 1,10.x.x.x
 
 // 電波強度確認（デバッグ用）
 AT+CSQ            → +CSQ: <rssi>,<ber>
@@ -344,6 +367,7 @@ SORACOM SIMはNAPT（Network Address Port Translation）経由でインターネ
 |------|------------|------------|
 | 制御チャンネル | UDP | 6000 |
 | 音声チャンネル | UDP | 6001 |
+| WebSocketモニター | TCP | 8080 |
 
 ---
 
@@ -374,7 +398,7 @@ UDPは到達保証がないが、制御メッセージは小サイズかつHEART
 | 0x04 | PTT_START_ACK | サーバー→端末 | 送話権許可 |
 | 0x05 | PTT_START_DENY | サーバー→端末 | 送話権拒否（他端末が送話中） |
 | 0x06 | PTT_STOP | 端末→サーバー | PTT解放（送話終了） |
-| 0x07 | PTT_NOTIFY | サーバー→端末 | 他端末が送話開始したことを通知 |
+| 0x07 | PTT_NOTIFY | サーバー→端末 | 他端末が送話開始したことを通知（ペイロード: 送話元セッションID 1バイト） |
 | 0x08 | PTT_NOTIFY_STOP | サーバー→端末 | 他端末が送話終了したことを通知 |
 | 0x09 | GROUP_CHANGE | 端末→サーバー | グループ切替要求 |
 | 0x0A | GROUP_CHANGE_ACK | サーバー→端末 | グループ切替承認 |
@@ -391,17 +415,18 @@ UDPは到達保証がないが、制御メッセージは小サイズかつHEART
 端末IDはサーバーが制御UDP HELLO_ACKで割り当てる1バイトのセッションIDを使用する。
 
 ```
-[1バイト: セッションID][1バイト: フラグ][2バイト: シーケンス番号][2バイト: タイムスタンプ][Nバイト: ペイロード]
+[1バイト: セッションID][1バイト: フラグ][2バイト: シーケンス番号][2バイト: タイムスタンプ][2バイト: Opusペイロード長][Nバイト: ペイロード]
 ```
 
-**ヘッダー合計: 6バイト**
+**ヘッダー合計: 8バイト**
 
 | フィールド | サイズ | 内容 |
 |------------|--------|------|
 | セッションID | 1バイト | サーバー割り当て（1〜10）。HELLO_ACKで通知 |
 | フラグ | 1バイト | bit7=パケットタイプ、bit6〜4=予約(000)、bit3〜0=グループID(1〜8) |
-| シーケンス番号 | 2バイト | パケット順序管理・欠落検知（uint16、ラップアラウンドあり） |
-| タイムスタンプ | 2バイト | 送信時刻（ms、相対値、uint16、ラップアラウンドあり） |
+| シーケンス番号 | 2バイト | パケット順序管理・欠落検知（uint16 big-endian、ラップアラウンドあり） |
+| タイムスタンプ | 2バイト | 送信時刻（ms、相対値、uint16 big-endian、ラップアラウンドあり） |
+| Opusペイロード長 | 2バイト | Opusフレームのバイト数（uint16 big-endian）。キープアライブ時は 0 |
 | ペイロード | 可変 | 音声時: Opusフレーム、キープアライブ時: なし（0バイト） |
 
 **フラグバイトのビットレイアウト**
@@ -419,8 +444,8 @@ bit7    bit6-4    bit3-0
 
 | パケット種別 | サイズ |
 |-------------|--------|
-| キープアライブ | **6バイト** |
-| 音声（Opus 8kbps / 20msフレーム） | **6 + 20 = 26バイト** |
+| キープアライブ | **8バイト** |
+| 音声（Opus 16kbps / 20msフレーム） | **8 + 約40 = 約48バイト** |
 
 #### 5.2.3 サーバーの転送動作
 
@@ -434,45 +459,15 @@ bit7    bit6-4    bit3-0
 SORACOMのNAPTによりデバイスの送信元ポートはセッション切断ごとに変化する。  
 サーバーはUDPパケット受信のたびに送信元アドレスを上書き更新し、常に最新のアドレスへ転送する。
 
-```
-受信UDPパケット
-    ↓
-device.UpdateUDPAddr(deviceID, srcAddr)  // IP:Portを上書き保存
-    ↓
-audio.Relay(packet)
-    ├─ 各転送先: device.GetUDPAddr(targetID) で最新アドレスを取得
-    └─ 取得したアドレスへUDP送信
-```
-
-**アドレスが未登録の場合**（接続後、まだ音声UDPを受信していない場合）:
-- `GetUDPAddr()` は `nil` を返す
-- 該当端末への転送をスキップし、WARNログを出力する
-
 #### 5.2.5 キープアライブ送信（デバイス側）
 
 NAPTマッピングを維持するため、デバイスは常にUDPを定期送信する必要がある。  
 音声パケットの送信がない状態（待機中・受話中）では `UDP_TYPE_KEEPALIVE` を送信する。
 
-```
-[デバイス udp_keepalive の動作]
-
-last_udp_sent を監視
-    │
-    ├─ 送話中（UDP_TYPE_AUDIOを送信中）
-    │    → 音声パケットがNAPTマッピングを維持するため、キープアライブ不要
-    │
-    └─ 待機中・受話中
-         → last_udp_sent から 25秒経過したら UDP_TYPE_KEEPALIVE を送信
-         → last_udp_sent をリセット
-```
-
 | 状態 | UDP送信内容 | 間隔 |
 |------|------------|------|
 | 送話中 | `UDP_TYPE_AUDIO`（音声パケット） | 20ms |
 | 待機中・受話中 | `UDP_TYPE_KEEPALIVE` | 25秒 |
-
-キープアライブはHEARTBEATタスクと統合せず、`udp_client` コンポーネント内で独立して管理する。  
-（制御チャンネルと音声チャンネルのNAPTマッピングは独立しているため、それぞれ維持が必要）
 
 ---
 
@@ -483,11 +478,25 @@ last_udp_sent を監視
 | 項目 | 内容 |
 |------|------|
 | コーデック | Opus |
-| ライブラリ | [esp-libopus](https://github.com/kahrendt/esp-libopus.git)（ESP-IDF向けOpusポート） |
-| サンプリングレート | 8kHz |
+| ライブラリ | esp-libopus（ESP-IDF向けOpusポート、PSRAM対応疑似スタック） |
+| サンプリングレート | 16kHz |
 | チャンネル | モノラル |
-| ビットレート | 8 kbps |
-| フレームサイズ | 20ms（160サンプル） |
+| ビットレート | 16 kbps |
+| フレームサイズ | 20ms（320サンプル） |
+| 用途モード | VOIP |
+| complexity | 5 |
+| Inband FEC | 有効（パケットロス時の前方誤り訂正） |
+| パケットロス想定 | 5% |
+
+#### Opusメモリ仕様（PSRAM使用）
+
+| 項目 | 内容 |
+|------|------|
+| 疑似スタック方式 | `NONTHREADSAFE_PSEUDOSTACK`（スレッドローカルストレージ経由で擬似的にスレッドセーフ化） |
+| 疑似スタックサイズ | 120KB / スレッド |
+| 確保先 | PSRAM（`heap_caps_malloc(MALLOC_CAP_SPIRAM)`）。失敗時は内部RAMにフォールバック |
+| エンコーダ疑似スタック | 120KB（PSRAM） |
+| デコーダ疑似スタック | 120KB（PSRAM）。タスク起動直後に PLC ウォームアップ呼び出しで確保 |
 
 ### 6.2 送受信フロー
 
@@ -500,15 +509,16 @@ last_udp_sent を監視
 **受信側**
 
 ```
-サーバーからUDP受信 → Opusデコード → PCM出力 → スピーカー再生
+サーバーからUDP受信 → ジッタバッファ → Opusデコード → PCM出力 → スピーカー再生
 ```
 
 ### 6.3 送話権制御（Floor Control）
 
 - PTTボタン押下時にサーバーへ `PTT_START` を送信
 - サーバーがグループ内の送話権を管理し、空きの場合のみ `PTT_START_ACK` を返す
-- 送話権を得た端末のみが音声UDPパケットを送信する
+- 送話権を得た端末のみが音声UDPパケットを送信する（`EVT_FLOOR_GRANTED` ビットで制御）
 - PTTボタン解放時に `PTT_STOP` を送信し送話権を解放する
+- **PTT_START_ACK の遅延受信処理**: ACK が PTT ボタン解放より後に届いた場合は `EVT_FLOOR_GRANTED` をセットせずに破棄する（`EVT_PTT_PRESSED` が既にクリアされているか確認する）
 
 ---
 
@@ -592,6 +602,7 @@ AXP2101のチャージLEDをI2C（レジスタ0x69）で手動制御する。
 - 音声UDPパケット（ポート6001）を同一グループの他端末へ転送する
 - HEARTBEATにより端末の接続状態を監視する
 - WebSocket（ポート8080）でデバッグモニタリングUIを提供する
+- ループバック機能（テスト用）: PTT音声を録音し、PTT終了後に送信元へ折り返す
 
 ### 9.3 サーバー処理フロー
 
@@ -613,11 +624,14 @@ PTT_START受信時
 音声UDP受信時
 ├─ 送信元IP:Portを端末テーブルに上書き更新（NAPT対応・全パケット共通）
 ├─ UDP_TYPE_KEEPALIVEパケット → アドレス更新のみ、転送しない
-├─ UDP_TYPE_AUDIOかつ送話権保持端末 → 同グループ他端末へ転送
+├─ UDP_TYPE_AUDIOかつ送話権保持端末かつループバックOFF → 同グループ他端末へ転送
+├─ UDP_TYPE_AUDIOかつ送話権保持端末かつループバックON → バッファへ蓄積
 └─ UDP_TYPE_AUDIOかつ送話権なし端末 → 破棄
 
 PTT_STOP受信時
-└─ 送話権解放 + 他端末へPTT_NOTIFY_STOP送信
+├─ 送話権解放
+├─ 他端末へPTT_NOTIFY_STOP送信
+└─ ループバックON時: バッファを折り返し送信（PTT_NOTIFY(0xFF) → 音声パケット再送 → PTT_NOTIFY_STOP）
 
 タイムアウト監視（定期タスク・10秒間隔）
 └─ 最終受信から75秒以上経過した端末 → セッション削除 + 送話権解放
@@ -634,6 +648,7 @@ server/
 ├─ floor.py              # グループ単位の送話権（Floor Control）管理
 ├─ ctrl_server.py        # UDP制御サーバー（asyncio.DatagramProtocol）
 ├─ audio_server.py       # UDP音声サーバー（asyncio.DatagramProtocol）
+├─ loopback.py           # ループバック機能（音声バッファ・折り返し送信）
 ├─ monitor.py            # WebSocketブロードキャスト管理・ログ管理
 └─ web_server.py         # WebSocketサーバー + 静的ファイル配信（HTTP）
 ```
@@ -651,9 +666,19 @@ asyncio.run(main())
  └─ websockets.serve(ws_handler, "0.0.0.0", 8080)     # WebSocket
 ```
 
+#### ループバック機能（loopback.py）
+
+| 項目 | 内容 |
+|------|------|
+| 用途 | 単体テスト。1台の端末でPTT → 自分の声が折り返し再生される |
+| サーバー仮想セッションID | `0xFF`（端末の自己パケットフィルタを回避するための予約値） |
+| 最大バッファ | 6000パケット（約120秒分） |
+| 折り返し動作 | PTT_NOTIFY(0xFF) 送信 → 20ms 間隔でパケット再送 → PTT_NOTIFY_STOP 送信 |
+| 有効化 | WebSocket モニターの「ループバック」トグルで切り替え |
+
 ### 9.5 WebSocketモニタリングAPI
 
-WebSocketサーバーはポート8080で待ち受ける。静的ファイル（モニタリングUI）は別途HTTPで配信する。
+WebSocketサーバーはポート8080で待ち受ける。
 
 | エンドポイント | プロトコル | 内容 |
 |---------------|-----------|------|
@@ -665,9 +690,10 @@ WebSocketサーバーはポート8080で待ち受ける。静的ファイル（�
 WebSocket接続確立直後に、サーバーは以下を順番に送信する。
 
 ```
-1. SNAPSHOT イベント（現在の全端末状態）
+1. snapshot イベント（現在の全端末状態）
 2. 直近のログエントリ（最大 LOG_MAX_ENTRIES 件）
 3. audio_init イベント（音声デコーダ初期化情報）
+4. loopback_state イベント（現在のループバック有効/無効状態）
 ```
 
 #### サーバー→クライアント イベント形式（JSON）
@@ -677,8 +703,9 @@ WebSocket接続確立直後に、サーバーは以下を順番に送信する�
 | `"snapshot"` | WebSocket接続時 | `devices` 配列（全端末の現在状態） |
 | `"devices"` | 端末状態変化時 | `devices` 配列（session_id, device_id, group_id, status, connected_at, last_seen） |
 | `"log"` | 各種制御イベント時 | `level`, `device_id`, `message`, `timestamp` |
-| `"audio_init"` | WebSocket接続時 | `sample_rate`=8000, `channels`=1 |
-| `"audio"` | 音声UDPパケット中継時 | `group`, `session`, `seq`, `ts`, `data`（base64 Opus） |
+| `"audio_init"` | WebSocket接続時 | `sample_rate`=16000, `channels`=1 |
+| `"audio"` | 音声UDPパケット中継時（サブスクライブ済みの場合） | `group`, `session`, `seq`, `ts`, `data`（base64 Opus） |
+| `"loopback_state"` | WebSocket接続時・切替時 | `enabled`（true/false） |
 
 #### クライアント→サーバー メッセージ形式（JSON）
 
@@ -686,6 +713,7 @@ WebSocket接続確立直後に、サーバーは以下を順番に送信する�
 |------------|------|
 | `"subscribe_audio"` | 音声フレームの配信を開始する |
 | `"unsubscribe_audio"` | 音声フレームの配信を停止する |
+| `"set_loopback"` | ループバック有効/無効を切り替える（`enabled`: true/false） |
 
 音声フレームはデータ量が多いため、明示的にサブスクライブした接続にのみ送信する。
 
@@ -697,7 +725,7 @@ WebSocket接続確立直後に、サーバーは以下を順番に送信する�
 | `UDP_PORT` | `6001` | UDP音声ポート |
 | `WS_PORT` | `8080` | WebSocketモニターポート |
 | `HEARTBEAT_TIMEOUT` | `75` | セッションタイムアウト（秒） |
-| `LOG_MAX_ENTRIES` | `1000` | SSE配信するログの最大保持数 |
+| `LOG_MAX_ENTRIES` | `1000` | メモリ保持ログの最大件数 |
 | `LOG_DIR` | `/var/log/transceiver` | ログファイル保存ディレクトリ（空文字で無効） |
 | `DOMAIN` | `` | HTTPS用ドメイン名（空文字でHTTP動作） |
 
@@ -709,8 +737,8 @@ WebSocket接続確立直後に、サーバーは以下を順番に送信する�
 
 ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信系を**物理的に異なるコアに分離**することで、処理の干渉を防ぎ動作を安定させる。
 
-- **Core 0（PRO_CPU）**: 通信系専用（モデム・制御UDP・音声UDP）
-- **Core 1（APP_CPU）**: 音声系専用（I2S・Opusエンコード/デコード）
+- **Core 0（PRO_CPU）**: 通信系専用（モデム・制御UDP・音声UDP・ハートビート）
+- **Core 1（APP_CPU）**: 音声系専用（I2S・Opusエンコード/デコード・PTT・状態管理）
 
 タスク間のデータ受け渡しはFreeRTOSのキューとイベントグループのみで行い、共有メモリへの直接アクセスは禁止する。
 
@@ -720,21 +748,21 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
-| `ctrl_task` | 8 | 8KB | 制御チャンネル（UDP）の送受信、再接続処理 |
-| `udp_rx_task` | 10 | 4KB | 音声UDPパケット受信 → 受信キューへ投入 |
-| `udp_tx_task` | 10 | 4KB | 送信キューからパケット取り出し → UDP送信 |
-| `heartbeat_task` | 5 | 2KB | 25秒ごとにHEARTBEATを制御UDPへ送信 |
+| `ctrl_task` | 5 | 8KB | 制御チャンネル（UDP）の送受信、再接続処理 |
+| `udp_rx_task` | 18 | 4KB | 音声UDPパケット受信 → ジッタバッファへ投入 |
+| `udp_tx_task` | 15 | 4KB | 送信キューからパケット取り出し → UDP送信 |
+| `heartbeat_task` | 3 | 2KB | 25秒ごとにHEARTBEATを制御UDPへ送信 |
 
 #### Core 1（APP_CPU）— 音声系
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
-| `i2s_capture_task` | 15 | 4KB | I2SからPCMを取得 → エンコードキューへ投入 |
-| `opus_encode_task` | 12 | 8KB | PCMをOpusエンコード → UDP送信キューへ投入 |
-| `opus_decode_task` | 12 | 8KB | 受信キューからOpusを取得 → デコード → 再生キューへ |
-| `i2s_playback_task` | 15 | 4KB | 再生キューからPCMを取得 → I2Sで出力 |
-| `ptt_task` | 6 | 2KB | PTTボタンのGPIO監視、チャタリング除去、状態通知 |
-| `state_machine_task` | 4 | 4KB | システム全体の状態管理（接続・待機・送話・受話） |
+| `i2s_capture_task` | 19 | 4KB | I2SからPCMを取得（INMP441） → エンコードキューへ投入 |
+| `i2s_playback_task` | 19 | 4KB | 再生キューからPCMを取得 → I2Sで出力（PCM5102） |
+| `opus_encode_task` | 20 | 8KB | PCMをOpusエンコード → UDP送信キューへ投入 |
+| `opus_decode_task` | 20 | 8KB | 受信キューからOpusを取得 → デコード → 再生キューへ |
+| `ptt_task` | 6 | 2KB | PTTボタンのGPIO監視、チャタリング除去（20ms）、状態通知 |
+| `state_machine_task` | 4 | 4KB | 制御メッセージに基づきシステム状態を管理 |
 | `led_task` | 3 | 2KB | イベントグループを監視し、AXP2101レジスタ0x69をI2C経由で更新してLED状態を制御 |
 
 > 優先度はESP-IDF FreeRTOS基準（数値が大きいほど高優先）
@@ -745,14 +773,14 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 
 | キュー名 | 送信元 | 受信先 | アイテム | キュー深さ |
 |----------|--------|--------|----------|-----------|
-| `pcm_encode_queue` | `i2s_capture_task` | `opus_encode_task` | PCMフレーム（20ms分） | 4 |
-| `encoded_tx_queue` | `opus_encode_task` | `udp_tx_task` | Opusパケット | 4 |
+| `pcm_encode_queue` | `i2s_capture_task` | `opus_encode_task` | PCMフレーム（20ms / 320サンプル） | 4 |
+| `encoded_tx_queue` | `opus_encode_task` | `udp_tx_task` | Opusパケット（seq・timestamp付き） | 4 |
 | `received_rx_queue` | `udp_rx_task` | `opus_decode_task` | Opusパケット（ジッタバッファ） | 8 |
-| `pcm_playback_queue` | `opus_decode_task` | `i2s_playback_task` | PCMフレーム（20ms分） | 4 |
+| `pcm_playback_queue` | `opus_decode_task` | `i2s_playback_task` | PCMフレーム（20ms / 320サンプル） | 4 |
 | `ctrl_tx_queue` | 各タスク | `ctrl_task` | 制御メッセージ構造体 | 8 |
 | `ctrl_rx_queue` | `ctrl_task` | `state_machine_task` | 制御メッセージ構造体 | 8 |
 
-#### FreeRTOSイベントグループ（`system_event_group`）
+#### FreeRTOSイベントグループ（`g_system_events`）
 
 | ビット | 名称 | 意味 |
 |--------|------|------|
@@ -771,11 +799,11 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 ```
 [I2S DMA割り込み]
       ↓
-i2s_capture_task (Core1, 優先度15)
+i2s_capture_task (Core1, 優先度19)  ← EVT_FLOOR_GRANTED 保持中のみキューへ投入
       ↓ pcm_encode_queue
-opus_encode_task (Core1, 優先度12)
+opus_encode_task (Core1, 優先度20)
       ↓ encoded_tx_queue
-udp_tx_task (Core0, 優先度10)
+udp_tx_task (Core0, 優先度15)
       ↓
 [UDP送信 → VPSサーバー]
 ```
@@ -785,11 +813,11 @@ udp_tx_task (Core0, 優先度10)
 ```
 [VPSサーバー → UDP受信]
       ↓
-udp_rx_task (Core0, 優先度10)
-      ↓ received_rx_queue（ジッタバッファ）
-opus_decode_task (Core1, 優先度12)
+udp_rx_task (Core0, 優先度18)
+      ↓ received_rx_queue（ジッタバッファ、深さ8）
+opus_decode_task (Core1, 優先度20)  ← 3フレーム以上溜まってから再生開始
       ↓ pcm_playback_queue
-i2s_playback_task (Core1, 優先度15)
+i2s_playback_task (Core1, 優先度19)
       ↓
 [I2S DMA出力]
 ```
@@ -799,23 +827,21 @@ i2s_playback_task (Core1, 優先度15)
 ```
 ptt_task: PTTボタン押下検知（チャタリング除去: 20ms）
       ↓ EVT_PTT_PRESSED をイベントグループにセット
-      ↓ PTT_START を ctrl_tx_queue へ直接投入
+      ↓ MSG_PTT_START を ctrl_tx_queue へ投入
 ctrl_task: PTT_START をサーバーへ送信
       ↓ PTT_START_ACK 受信
 ctrl_task: ctrl_rx_queue へ ACK を投入
       ↓
-state_machine_task: EVT_FLOOR_GRANTED をセット
-      ↓
-i2s_capture_task: EVT_FLOOR_GRANTED を確認してからキャプチャ開始
-opus_encode_task: エンコード開始
-udp_tx_task: 送信開始
+state_machine_task: EVT_PTT_PRESSED が立っている場合のみ EVT_FLOOR_GRANTED をセット
+      ↓                ※ ACK 遅延時（PTT解放後にACKが届いた場合）はセットしない
+i2s_capture_task: EVT_FLOOR_GRANTED を確認してキャプチャ・エンコード開始
 
 --- PTTボタン解放 ---
 
-ptt_task: ボタン解放検知
+ptt_task: ボタン解放検知（チャタリング除去: 20ms）
       ↓ EVT_PTT_PRESSED・EVT_FLOOR_GRANTED をクリア
-      ↓ PTT_STOP を ctrl_tx_queue へ直接投入
-i2s_capture_task: キャプチャ停止（キューをフラッシュ）
+      ↓ MSG_PTT_STOP を ctrl_tx_queue へ投入
+i2s_capture_task: キャプチャ停止（EVT_FLOOR_GRANTED なしのためキューへ投入しない）
 ctrl_task: PTT_STOP をサーバーへ送信
 ```
 
@@ -827,7 +853,8 @@ ctrl_task: PTT_STOP をサーバーへ送信
 |------|------|
 | 実装 | `received_rx_queue`（深さ8、約160ms分） |
 | 再生開始条件 | キューに3フレーム以上たまってから再生開始 |
-| パケット欠落時 | Opusのパケットロス隠蔽（PLC）機能で補間 |
+| パケット欠落時 | Opusのパケットロス隠蔽（PLC）機能で補間。最大 25フレーム（500ms）まで継続 |
+| PLC超過時 | 送信終了とみなし、次のフレーム到着まで待機 |
 | キューあふれ時 | 古いフレームを破棄（遅延蓄積を防ぐ） |
 
 ### 10.7 モデム通信の分離
@@ -836,11 +863,11 @@ SIM7080GへのATコマンドはUART2経由で行うが、`modem`コンポーネ�
 
 ```
 ctrl_task / udp_tx_task → modem_ctrl_open/send/recv/close()
-                               ↓ ATコマンド（UART2、at_cmd.c で排他制御）
+                               ↓ Mutex保護ATコマンド（UART2、at_cmd.c）
                           SIM7080G モデム
 ```
 
-ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、UDP送受信が競合しないよう制御する。
+---
 
 ## 11. 起動シーケンス
 
@@ -871,7 +898,7 @@ ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、UDP
 [Phase 7] FreeRTOS タスク起動
   │
   ▼
-[待機状態] PTT待ち（LED: 緑点灯）
+[待機状態] PTT待ち（LED: 常時点灯）
 ```
 
 各フェーズで失敗した場合はLEDで状態を表示し、リトライまたは停止する。
@@ -885,9 +912,7 @@ ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、UDP
 | ステップ | 処理 | 失敗時 |
 |----------|------|--------|
 | 1-1 | `config.h` から設定定数を読み込み（グループID・サーバーIP・ポート番号） | — |
-| 1-3 | GPIO初期化（PTTボタン、LED） | 再起動 |
-| 1-4 | I2C初期化（SDA=GPIO15、SCL=GPIO7） | 再起動 |
-| 1-5 | FreeRTOSイベントグループ・キュー生成 | 再起動 |
+| 1-2 | FreeRTOSイベントグループ・キュー生成 | 再起動 |
 
 ---
 
@@ -901,6 +926,7 @@ I2C経由（7ビットアドレス 0x34）でPMICを設定する。
 | 2-2 | BLDO1 電圧設定（3300mV）→ 有効化 | **必須。無効化禁止**。電圧設定は有効化より前に行う |
 | 2-3 | DCDC3 コールドスタート → 電圧設定（3000mV）→ 有効化 | すでにONの場合は200ms OFF後に電圧設定して再投入 |
 | 2-4 | 100ms待機 | モデム電源安定待ち |
+| 2-5 | LED を 1Hz 点滅に設定 | 起動シーケンス中を示す |
 
 ---
 
@@ -908,33 +934,19 @@ I2C経由（7ビットアドレス 0x34）でPMICを設定する。
 
 | ステップ | 処理 | タイムアウト | 失敗時 |
 |----------|------|------------|--------|
-| 3-0 | PWRKEY / DTR GPIO を OUTPUT LOW に初期化（DCDC3投入前または直後）| — | GPIO が INPUT 浮遊のままだとトランジスタ経由で PWRKEY が不定アサートされブート不可 |
-| 3-1 | AT疎通確認（`AT` → `OK`、1秒）でモデムが起動済みか確認 | — | 起動済みなら 3-2 をスキップ（2重トグル防止） |
-| 3-2 | PWRKEYパルス: GPIO LOW(100ms) → HIGH(1000ms) → LOW → 2000ms待機 | — | トランジスタ反転あり: GPIO HIGH = PWRKEY アサート（≥1.3sでON/OFFトグル） |
+| 3-0 | PWRKEY / DTR GPIO を OUTPUT LOW に初期化 | — | GPIO が浮遊のままだとトランジスタ経由で PWRKEY が不定アサートされブート不可 |
+| 3-1 | AT疎通確認（1秒）でモデムが起動済みか確認 | 1秒 | 起動済みなら 3-2 をスキップ（2重トグル防止） |
+| 3-2 | PWRKEYパルス: GPIO LOW(100ms) → HIGH(1000ms) → LOW → 2000ms待機 | — | トランジスタ反転: GPIO HIGH = PWRKEY アサート（≥1.3sでON/OFFトグル） |
 | 3-3 | **921600 bpsで疎通確認**（`AT` → `OK`） | 3秒 | ステップ3-4へ（フォールバック） |
-| 3-4 | （3-3失敗時）**115200 bpsに切替えて再確認**（`AT` → `OK`） | 5秒 | 3回リトライ後に再起動 |
-| 3-5 | （3-4成功時）`AT+IPR=921600` で921600 bpsへ変更し、UARTを921600 bpsに再設定 | 3秒 | 115200 bpsのまま続行 |
-| 3-6 | SIM認識確認（`AT+CPIN?` → `READY`） | 5秒 | LED消灯（停止） |
-| 3-7 | 通信規格をLTE-Mのみに設定（`AT+CNMP=38` / `AT+CMNB=1`） | 5秒 | リトライ |
-| 3-8 | APNを設定（`AT+CGDCONT=1,"IP","soracom.io"`） | 5秒 | リトライ |
-| 3-9 | 認証設定（`AT+CGAUTH=1,1,"sora","sora"`） | 5秒 | リトライ |
-| 3-10 | エコーバック無効（`ATE0`） | 2秒 | 無視して続行 |
-
-**ボーレートネゴシエーション フロー**
-
-```
-UARTを 921600 bps で開く
-  │
-  ├─ AT → OK ───────────────────────► そのまま 921600 bps で続行
-  │
-  └─ タイムアウト / エラー
-       │
-       UARTを 115200 bps に切替え
-         │
-         ├─ AT → OK ──► AT+IPR=921600 送信 → UARTを 921600 bps に再設定 → 続行
-         │
-         └─ タイムアウト → リトライ（最大3回）→ 失敗で再起動
-```
+| 3-4 | （3-3失敗時）**115200 bpsに切替えて再確認** | 5秒 | 3回リトライ後に再起動 |
+| 3-5 | （3-4成功時）`AT+IPR=921600` で921600 bpsへ変更 | 3秒 | 115200 bpsのまま続行 |
+| 3-6 | エコーバック無効（`ATE0`） | 2秒 | 無視して続行 |
+| 3-7 | PSM（Power Saving Mode）無効化（`AT+CPSMS=0`） | 3秒 | 警告ログのみ（非対応モデムあり） |
+| 3-8 | eDRX（Extended Discontinuous Reception）無効化（`AT+CEDRXS=0`） | 3秒 | 警告ログのみ |
+| 3-9 | SIM認識確認（`AT+CPIN?` → `READY`） | 5秒 | LED消灯（停止）。再起動しない |
+| 3-10 | 通信規格をLTE-Mのみに設定（`AT+CNMP=38` / `AT+CMNB=1`） | 5秒 | リトライ |
+| 3-11 | APNを設定（`AT+CGDCONT=1,"IP","soracom.io"`） | 5秒 | リトライ |
+| 3-12 | 認証設定（`AT+CGAUTH=1,1,"sora","sora"`） | 5秒 | リトライ |
 
 > SIMカードが未挿入または未認識の場合はLED消灯（`0x05`）で停止し、再起動しない（ユーザーにSIM挿入を促す）。
 
@@ -945,9 +957,14 @@ UARTを 921600 bps で開く
 | ステップ | 処理 | タイムアウト | 失敗時 |
 |----------|------|------------|--------|
 | 4-1 | ネットワーク登録待機（`AT+CEREG?` → `0,1` または `0,5`） | 60秒 | 30秒待機後に再試行、3回失敗で再起動 |
-| 4-2 | PDP コンテキスト有効化（`AT+CGACT=1,1`） | 10秒 | リトライ |
-| 4-3 | IPアドレス取得確認（`AT+CGPADDR=1` → `+CGPADDR: 1,x.x.x.x`）※クォートなし | 5秒 | リトライ |
-| 4-4 | 電波強度確認（`AT+CSQ`）をログ出力 | — | 無視して続行 |
+| 4-2 | PDPコンテキスト有効化（`AT+CGACT=1,1`） | 10秒 | リトライ |
+| 4-3 | アプリネットワーク設定（`AT+CNCFG=0,1,"soracom.io","sora","sora",1`） | 5秒 | リトライ |
+| 4-4 | アプリネットワーク有効化（`AT+CNACT=0,1`）、`+APP PDP: 0,ACTIVE` URC 待ち | 60秒 | 5回リトライ |
+| 4-5 | IPアドレス取得確認（`AT+CGPADDR=1`） | 5秒 | リトライ |
+| 4-6 | 電波強度確認（`AT+CSQ`）をログ出力 | — | 無視して続行 |
+| 4-7 | PSM 状態確認（`AT+CPSMS?`）をログ出力 | — | 無視して続行 |
+
+> **AT+CNACT の成功判定**: `OK` 応答後に `+APP PDP: 0,ACTIVE` URC が到達することで成功とみなす。`OK` のみでは不十分（DEACTIVE になる場合あり）。
 
 ---
 
@@ -957,7 +974,7 @@ UARTを 921600 bps で開く
 
 | ステップ | 処理 | タイムアウト | 失敗時 |
 |----------|------|------------|--------|
-| 5-1 | UDP ctrlソケットオープン（VPS IP:6000） | 15秒 | 30秒待機後に再試行 |
+| 5-1 | UDP ctrlソケットオープン（VPS IP:6000） | 15秒 | バックオフ後に再試行 |
 | 5-2 | `HELLO`メッセージ送信（端末ID、グループID含む） | — | — |
 | 5-3 | `HELLO_ACK`受信待ち | 10秒 | 再試行 |
 | 5-4 | `EVT_CONNECTED`イベントをセット | — | — |
@@ -975,47 +992,47 @@ UARTを 921600 bps で開く
 
 | ステップ | 処理 | 失敗時 |
 |----------|------|--------|
-| 6-1 | I2S（キャプチャ用）初期化（INMP441向け設定: 8kHz、モノラル） | 再起動 |
-| 6-2 | I2S（再生用）初期化（PCM5102向け設定: 8kHz、モノラル） | 再起動 |
-| 6-3 | Opusエンコーダ初期化（8kHz、モノラル、8kbps） | 再起動 |
-| 6-4 | Opusデコーダ初期化（8kHz、モノラル） | 再起動 |
+| 6-1 | I2S TX 初期化（PCM5102 DAC: I2S_NUM_0、BCK=GPIO18、WS=GPIO17、DOUT=GPIO16、16kHz ステレオ 32bit） | 再起動 |
+| 6-2 | I2S RX 初期化（INMP441マイク: I2S_NUM_1、BCK=GPIO11、WS=GPIO10、DIN=GPIO9、16kHz ステレオ 32bit） | 再起動 |
+| 6-3 | Opusエンコーダ初期化（16kHz、モノラル、16kbps、VOIP） | 再起動 |
+| 6-4 | Opusデコーダ初期化（16kHz、モノラル） | 再起動 |
 
 ---
 
 ### 11.8 Phase 7: FreeRTOS タスク起動
 
-全初期化完了後に各タスクを生成する。生成順は依存関係に従う。
+全初期化完了後に各タスクを生成する。
 
 ```
-1. ctrl_task       (Core0, 優先度8)
-2. udp_rx_task     (Core0, 優先度10)
-3. udp_tx_task     (Core0, 優先度10)
-4. heartbeat_task  (Core0, 優先度5)
-5. opus_encode_task (Core1, 優先度12)
-6. opus_decode_task (Core1, 優先度12)
-7. i2s_capture_task (Core1, 優先度15)  ← EVT_FLOOR_GRANTED待ちで休止
-8. i2s_playback_task (Core1, 優先度15) ← pcm_playback_queue待ちで休止
-9. ptt_task        (Core1, 優先度6)
-10. led_task        (Core1, 優先度3)
-11. state_machine_task (Core1, 優先度4)
+Core 0:
+1. ctrl_task        (Core0, 優先度5,  Stack 8KB)
+2. udp_rx_task      (Core0, 優先度18, Stack 4KB)
+3. udp_tx_task      (Core0, 優先度15, Stack 4KB)
+4. heartbeat_task   (Core0, 優先度3,  Stack 2KB)
+
+Core 1:
+5. opus_encode_task  (Core1, 優先度20, Stack 8KB)
+6. opus_decode_task  (Core1, 優先度20, Stack 8KB) ← 起動直後にデコーダ疑似スタックをウォームアップ
+7. i2s_capture_task  (Core1, 優先度19, Stack 4KB) ← EVT_FLOOR_GRANTED 待ちで休止
+8. i2s_playback_task (Core1, 優先度19, Stack 4KB) ← pcm_playback_queue 待ちで休止
+9. ptt_task          (Core1, 優先度6,  Stack 2KB)
+10. state_machine_task (Core1, 優先度4, Stack 4KB)
+11. led_task          (Core1, 優先度3,  Stack 2KB)
 ```
 
-全タスク起動完了後にLEDを緑点灯に変更し、待機状態へ移行する。
+全タスク起動完了後にLEDを常時点灯に変更し、待機状態へ移行する。
 
 ---
 
 ### 11.9 LED による起動状態表示
 
-AXP2101 レジスタ0x69を手動制御モード（bit2=MAN=1, bit0=AUTO=1）で使用する。  
-Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
-
-| フェーズ | LED動作 | レジスタ値 |
-|----------|---------|-----------|
-| Phase 1〜2（ESP32・PMIC初期化中） | 消灯（制御不可） | — |
-| Phase 3〜7（起動シーケンス全体） | 1Hz点滅 | `0x15` |
-| 待機状態（全接続完了） | 常時点灯 | `0x35` |
-| SIM未検出エラー（停止） | 消灯 | `0x05` |
-| サーバー接続失敗（リトライ中） | 1Hz点滅 | `0x15` |
+| フェーズ | LED動作 |
+|----------|---------|
+| Phase 1（ESP32初期化中） | 消灯（制御不可） |
+| Phase 2〜7（起動シーケンス全体） | 1Hz点滅 |
+| 待機状態（全接続完了） | 常時点灯 |
+| SIM未検出エラー（停止） | 消灯 |
+| サーバー接続失敗（リトライ中） | 1Hz点滅 |
 
 ---
 
@@ -1029,6 +1046,8 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 | Phase 5（サーバー接続） | 約 1〜3秒 |
 | Phase 6〜7 | 約 0.5秒 |
 | **合計** | **約 15〜40秒** |
+
+---
 
 ## 12. エラー処理・再接続設計
 
@@ -1048,8 +1067,6 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 
 #### 再接続バックオフ戦略
 
-接続失敗を繰り返すほど待機時間を延ばし、サーバーへの負荷集中を防ぐ。
-
 | 試行回数 | 待機時間 |
 |---------|---------|
 | 1回目 | 即時 |
@@ -1059,20 +1076,14 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 
 #### 再接続時の状態リセット
 
-制御チャンネルの通信途絶を検知した時点で以下を実行する。
-
 ```
 制御チャンネル切断検知
   │
   ├─ 送話権を保持していた場合
-  │    → 音声送信を即時停止（i2s_capture_task, opus_encode_task停止）
-  │    → EVT_FLOOR_GRANTED をクリア
+  │    → EVT_FLOOR_GRANTED をクリア（i2s_capture_task は自動停止）
   │    → サーバー側は75秒後に自動解放（HEARTBEAT タイムアウト）
   │
-  ├─ 受話中だった場合
-  │    → 音声再生を停止（ジッタバッファをフラッシュ）
-  │    → EVT_FLOOR_BUSY をクリア
-  │
+  ├─ EVT_CONNECTED をクリア
   ├─ EVT_DISCONNECTED をセット（LED: 1Hz点滅）
   └─ バックオフ付きで制御チャンネル再接続ループ開始
 
@@ -1082,27 +1093,7 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
   ├─ HELLO_ACK 受信 → 新しいセッションID取得
   ├─ UDP キープアライブ送信（NAPTマッピング再確立）
   ├─ EVT_DISCONNECTED をクリア
-  └─ EVT_CONNECTED をセット（LED: 常時点灯、待機状態へ）
-```
-
-#### `ctrl_task` 内の再接続ループ
-
-```c
-// 疑似コード
-while (true) {
-    if (ctrl_udp_open(server_ip, CTRL_PORT) == OK) {
-        retry_count = 0;
-        send_hello();
-        recv_hello_ack();         // 最大3回リトライ
-        udp_send_keepalive();
-        state_set(EVT_CONNECTED);
-        ctrl_recv_loop();         // 切断まで送受信をループ
-    }
-    // 切断 or 接続失敗
-    state_clear(EVT_CONNECTED);
-    state_set(EVT_DISCONNECTED);
-    wait(backoff(retry_count++)); // 最大30秒
-}
+  └─ EVT_CONNECTED をセット（LED: 常時点灯）
 ```
 
 ---
@@ -1120,59 +1111,44 @@ PTTボタン押下
        │
        ├─ PTT_START_DENY受信 → 送話権取得失敗（他端末送話中）
        │    → EVT_FLOOR_BUSY をセット
-       │    → LEDを1Hz点滅（受話中と同表示）
-       │    → PTTボタン解放まで待機（再試行なし）
        │
-       └─ タイムアウト（3秒）→ サーバー無応答
-            → 送話権取得失敗として扱う
-            → EVT_DISCONNECTED をセット → 再接続フローへ
+       └─ タイムアウト（3秒）→ 送話権取得失敗として扱う
 ```
 
-#### ケース2: 送話権保持中に制御チャンネル切断
+#### ケース2: PTT解放後にACKが遅延到着
+
+LTE-M の高遅延環境で起きうるケース。
 
 ```
-送話中（EVT_FLOOR_GRANTED）
+PTTボタン押下（T=0ms）
+  │ PTT_START 送信
+PTTボタン解放（T=60ms）
+  │ EVT_PTT_PRESSED クリア / PTT_STOP 送信
   │
-  └─ 制御チャンネル切断検知
-       │
-       ├─ 音声送信を即時停止
-       ├─ EVT_FLOOR_GRANTED をクリア
-       ├─ EVT_DISCONNECTED をセット
-       └─ 再接続フローへ
-            （サーバー側は75秒後にHEARTBEATタイムアウトで送話権を自動解放）
+  ↓ （約600ms後）
+PTT_START_ACK 受信
+  │
+  └─ state_machine_task: EVT_PTT_PRESSED が既にクリア
+       → EVT_FLOOR_GRANTED をセットしない（ACK を破棄）
+       → 送信は開始されない
+       ※ PTT_STOP はすでにサーバーへ送信済みのため、サーバー側は正常に処理される
 ```
 
 #### ケース3: PTTボタン長押し（最大保持時間超過）
-
-長時間の占有を防ぐため、送話権の最大保持時間を設ける。
 
 | 項目 | 値 |
 |------|-----|
 | 最大送話時間 | 60秒 |
 | 超過時の動作 | PTT_STOP を自動送信し、送話権を解放 |
-| ユーザー通知 | LEDを常時点灯（待機中）に戻す |
-
-```
-EVT_FLOOR_GRANTED セット時にタイマー開始（60秒）
-  │
-  ├─ PTTボタン解放 → PTT_STOP送信（正常フロー）
-  │
-  └─ 60秒経過 → 自動的に PTT_STOP 送信
-       → EVT_FLOOR_GRANTED クリア
-       → state_machine_task がLEDを待機中（常時点灯）に更新
-```
 
 #### ケース4: UDPパケット途絶（受話中）
 
-制御チャンネルは維持されているが音声UDPが届かない場合。
-
 ```
-received_rx_queue が枯渇
+ジッタバッファが枯渇
   │
-  ├─ Opusのパケットロス隠蔽（PLC）で補間（最大3フレーム = 60ms）
+  ├─ Opusのパケットロス隠蔽（PLC）で補間（最大 25フレーム = 500ms）
   │
-  └─ 60ms以上途絶 → 無音出力
-       （制御チャンネルは維持しているので再接続は不要）
+  └─ 500ms以上途絶 → 無音出力・待機
        （PTT_NOTIFY_STOP が来るまで受話中状態を維持）
 ```
 
@@ -1180,110 +1156,78 @@ received_rx_queue が枯渇
 
 ### 12.4 LTE-M切断フロー
 
-LTE-Mレベルで切断した場合は制御チャンネル切断として上位に伝播する。
-
 ```
-AT+CEREG URCで切断通知 or 制御チャンネル切断をトリガーに検知
+制御チャンネル接続が連続失敗
   │
-  ├─ 制御チャンネル再接続を試みる（バックオフ付き）
-  │    → モデムレベルの切断なら UDP open 自体が失敗し続ける
-  │
-  └─ 制御チャンネル接続が5回連続失敗
-       → ctrl_task が modem_connect() を呼び出してLTE-M再接続を試みる
-            → AT+CGACT=0,1 → AT+CGACT=1,1（PDP再有効化）
-            → 改善しなければモデムをリセット（PWRキー制御）
+  └─ ctrl_task が modem_ensure_network() を呼び出してLTE-M再接続
+       → ATE0（エコー再無効化）
+       → AT+CEREG? でLTE登録確認（最大30秒）
+       → AT+CGACT=1,1（PDP再有効化）
+       → AT+CNCFG / AT+CNACT でアプリネット再有効化
 ```
 
 ---
 
 ## 13. デバッグモニターアプリ設計
 
-### 12.1 概要
+### 13.1 概要
 
 VPSサーバー上のPythonプロセスがHTTPサーバーを内蔵し、デバッグ用のWebアプリを提供する。  
 フロントエンドはHTML + JavaScriptのみ（フレームワークなし）。リアルタイム更新はWebSocketで行う。
 
 ```
 ブラウザ（HTML+JS）
-  ├─ WebSocket ──► Python server :8080/ws   （リアルタイム: デバイス状態・ログ・音声）
-  └─ REST API  ──► Python server :8080/api  （操作: テストトーン等）
+  └─ WebSocket ──► Python server :8080/   （リアルタイム: デバイス状態・ログ・音声・ループバック制御）
 ```
 
 ポート8080はデバッグ用。本番運用時はファイアウォールで制限する。
 
 ---
 
-### 12.2 機能一覧
+### 13.2 機能一覧
 
 | 機能 | 内容 |
 |------|------|
 | デバイスリスト | 接続中の全端末の状態をリアルタイム表示 |
-| ログ | サーバーイベントをリアルタイム表示・フィルタリング |
+| ログ | サーバーイベントをリアルタイム表示 |
 | 音声モニター | 指定グループの音声をブラウザで傍受再生 |
-| テストトーン送信 | サーバーからテストトーンをグループへ送信 |
+| ループバック | PTT音声を録音して送信元へ折り返す（テスト用） |
 
 ---
 
-### 12.3 サーバー側 API 設計
+### 13.3 WebSocket API
 
-#### WebSocket エンドポイント
+#### 接続時の初期配信
 
-**`GET /ws`**
+WebSocket接続確立直後にサーバーが送信する内容:
 
-モニターアプリが接続するWebSocketエンドポイント。サーバーから以下のメッセージをJSON形式でプッシュする。
+1. `snapshot`: 現在の全端末状態
+2. 直近のログエントリ（最大 LOG_MAX_ENTRIES 件）
+3. `audio_init`: 音声デコーダ初期化情報（sample_rate=16000, channels=1）
+4. `loopback_state`: 現在のループバック有効/無効状態
 
-```json
-// メッセージ共通フォーマット
-{
-  "type": "<メッセージタイプ>",
-  "payload": { ... }
-}
-```
+#### サーバー→クライアント メッセージ一覧（JSON）
 
-**サーバー → ブラウザ メッセージ一覧**
+| `type` 値 | タイミング | 主なフィールド |
+|-----------|-----------|--------------|
+| `"snapshot"` | 接続時 | `devices` 配列 |
+| `"devices"` | 端末状態変化時 | `devices` 配列 |
+| `"log"` | 各種イベント時 | `level`, `device_id`, `message`, `timestamp` |
+| `"audio_init"` | 接続時 | `sample_rate`=16000, `channels`=1 |
+| `"audio"` | 音声中継時（サブスクライブ済みのみ） | `group`, `session`, `seq`, `ts`, `data`（base64 Opus） |
+| `"loopback_state"` | 接続時・切替時 | `enabled`（true/false） |
 
-| type | タイミング | payload内容 |
-|------|-----------|-------------|
-| `device_list` | WebSocket接続時（初回全量） | 全デバイスの状態配列 |
-| `device_update` | デバイス状態変化時 | 変化した1デバイスの状態 |
-| `log_entry` | イベント発生時 | ログ1件（level, message, timestamp） |
-| `audio_data` | 音声モニター有効時 | Opusフレーム（Base64エンコード）+ グループID |
+#### クライアント→サーバー メッセージ一覧（JSON）
 
-**ブラウザ → サーバー メッセージ一覧**
-
-| type | payload内容 | 動作 |
-|------|------------|------|
-| `monitor_start` | `{ "group_id": 1 }` | 指定グループの音声モニター開始 |
-| `monitor_stop` | `{}` | 音声モニター停止 |
-
-#### REST API エンドポイント
-
-| メソッド | パス | 内容 |
-|----------|------|------|
-| `GET` | `/api/devices` | 接続中デバイス一覧をJSON返却 |
-| `GET` | `/api/logs?limit=100` | 最新ログ取得 |
-| `POST` | `/api/test_tone` | テストトーン送信開始 |
-| `DELETE` | `/api/test_tone` | テストトーン停止 |
-
-**`POST /api/test_tone` リクエストボディ**
-
-```json
-{
-  "group_id": 1,
-  "frequency": 1000,
-  "duration_ms": 3000
-}
-```
-
-| フィールド | 内容 |
+| `action` 値 | 内容 |
 |------------|------|
-| `group_id` | 送信先グループID（1〜8） |
-| `frequency` | トーン周波数 Hz（例: 440、1000） |
-| `duration_ms` | 送信時間 ms（0=手動停止まで継続） |
+| `"subscribe_audio"` | 音声フレームの配信を開始する |
+| `"unsubscribe_audio"` | 音声フレームの配信を停止する |
+| `"set_loopback"` | ループバック有効/無効（`enabled`: true/false） |
 
 ---
 
-### 12.4 デバイスリスト機能
+### 13.4 デバイスリスト機能
 
 #### 表示項目
 
@@ -1295,18 +1239,6 @@ VPSサーバー上のPythonプロセスがHTTPサーバーを内蔵し、デバ�
 | 接続時刻 | 制御チャンネル接続確立時刻 |
 | 最終受信 | 最後にHEARTBEATまたはパケットを受信した時刻 |
 
-#### `device_update` payload 例
-
-```json
-{
-  "device_id": "A1B2C3D4",
-  "group_id": 2,
-  "status": "transmitting",
-  "connected_at": "2026-04-08T10:00:00Z",
-  "last_seen": "2026-04-08T10:05:30Z"
-}
-```
-
 **status 値**
 
 | 値 | 意味 |
@@ -1314,149 +1246,57 @@ VPSサーバー上のPythonプロセスがHTTPサーバーを内蔵し、デバ�
 | `standby` | 待機中 |
 | `transmitting` | 送話中（フロア保持） |
 | `receiving` | 受話中（他端末送話中） |
-| `disconnected` | 切断（一覧から60秒後に削除） |
 
 ---
 
-### 12.5 ログ機能
-
-#### ログレベル
-
-| レベル | 用途 |
-|--------|------|
-| `INFO` | 接続・切断・PTTイベント・グループ切替 |
-| `WARN` | タイムアウト・パケット欠落・再接続 |
-| `ERROR` | 不正パケット・内部エラー |
-
-#### `log_entry` payload 例
-
-```json
-{
-  "level": "INFO",
-  "message": "Device A1B2C3D4 joined group 2",
-  "timestamp": "2026-04-08T10:00:01Z",
-  "device_id": "A1B2C3D4"
-}
-```
-
-#### UI仕様
-
-- 最大1000件を画面に保持（超過分は古い順に削除）
-- レベル（INFO / WARN / ERROR）でフィルタリング可能
-- デバイスIDでフィルタリング可能
-- 「クリア」ボタンで画面ログをリセット（サーバー側ログには影響なし）
-- 自動スクロール（最新ログを常に表示）、チェックボックスでON/OFF切替
-
----
-
-### 12.6 音声モニター機能
+### 13.5 音声モニター機能
 
 #### 動作概要
 
-1. ブラウザが `monitor_start` をWebSocketで送信（グループID指定）
-2. サーバーは指定グループへの転送音声UDPパケットをWebSocketにも複製送信
+1. ブラウザが `subscribe_audio` をWebSocketで送信
+2. サーバーは音声UDPパケットをWebSocketにも複製送信
 3. ブラウザはOpusフレーム（Base64）を受信 → デコード → Web Audio APIで再生
-
-#### ブラウザ側処理
-
-```
-WebSocketで audio_data 受信
-  ↓
-Base64デコード → Uint8Array（Opusフレーム）
-  ↓
-WebCodecs API（AudioDecoder）または libopus.wasm でデコード
-  ↓
-Web Audio API（AudioContext）で再生
-```
-
-#### `audio_data` payload 例
-
-```json
-{
-  "group_id": 1,
-  "device_id": "A1B2C3D4",
-  "seq": 1234,
-  "opus_frame": "T2dnUwAC..."
-}
-```
 
 #### 制約・注意事項
 
-- モニター可能なグループは**同時に1グループのみ**（WebSocket接続1本につき）
 - 音声モニターはデバッグ用途のみ。遅延・音切れは許容する
-- ブラウザのAutoPlay制限のため、ユーザー操作（ボタンクリック）後に再生開始する
+- ブラウザのAutoPlay制限のため、ユーザー操作後に再生開始する
 
 ---
 
-### 12.7 テストトーン送信機能
+### 13.6 ループバック機能
 
 #### 動作概要
 
-1. ブラウザが `POST /api/test_tone` を送信
-2. サーバーが正弦波PCMを生成 → Opusエンコード → 指定グループに音声UDPパケットとして配信
-3. 実デバイスと同じ経路で音声が流れるため、エンドツーエンドの音声テストが可能
+1. ブラウザで「ループバック ON」ボタンを押す
+2. サーバーが音声中継の代わりにパケットをバッファに蓄積
+3. PTT解放時にサーバーがバッファを送信元端末へ折り返す
+4. 端末が自分の声を受信・再生する
 
-#### サーバー側生成仕様
+#### サーバー側実装詳細
 
-| 項目 | 内容 |
-|------|------|
-| 波形 | 正弦波（サイン波） |
-| サンプリングレート | 8kHz（デバイスと同一） |
-| チャンネル | モノラル |
-| フレームサイズ | 20ms（160サンプル） |
-| エンコード | Opus 8kbps |
-| 送信元セッションID | `0xFF`（テストトーン識別用の予約セッションID、実端末には割り当てない） |
-
-#### UI仕様
-
-- グループID選択（1〜8）
-- 周波数選択（440Hz / 1000Hz / 2000Hz）
-- 送信時間（1秒 / 3秒 / 5秒 / 連続）
-- 「送信」ボタン押下でPOST
-- 送信中はボタンをグレーアウト、カウントダウン表示
-- 「停止」ボタンでDELETE送信
+- セッションID `0xFF` を使用（端末の自己パケットフィルタを回避）
+- 折り返し送信: PTT_NOTIFY(0xFF) → 20ms 間隔でパケット再送 → PTT_NOTIFY_STOP
 
 ---
 
-### 12.8 UI レイアウト
-
-```
-┌─────────────────────────────────────────────────┐
-│  IP Transceiver Debug Monitor                   │
-├──────────────────┬──────────────────────────────┤
-│  デバイスリスト  │  ログ                        │
-│                  │  [INFO][WARN][ERROR] フィルタ │
-│  ID   Grp  状態  │  [自動スクロール] [クリア]   │
-│  ────────────── │                              │
-│  A1B2 G2  待機  │  10:00:01 [INFO] Device ...  │
-│  C3D4 G1  送話  │  10:00:05 [INFO] PTT start.. │
-│  ...            │  ...                         │
-├──────────────────┴──────────────────────────────┤
-│  音声モニター         テストトーン送信           │
-│  グループ: [G1 ▼]    グループ: [G1 ▼]           │
-│  [モニター開始]       周波数:  [1000Hz ▼]        │
-│  ▶ 受信中... G1      時間:    [3秒 ▼]           │
-│                       [送信]                    │
-└─────────────────────────────────────────────────┘
-```
-
 ## 14. システムアーキテクチャ
 
-### 13.1 全体構成図
+### 14.1 全体構成図
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    VPS (Debian / Python)                    │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  ctrl_server │  │  udp_server  │  │    ws_server     │  │
+│  │  ctrl_server │  │ audio_server │  │    web_server    │  │
 │  │  UDP:6000    │  │  UDP:6001    │  │    port: 8080    │  │
 │  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
 │         │                 │                    │            │
 │  ┌──────▼─────────────────▼──────┐  ┌─────────▼─────────┐  │
 │  │         core layer            │  │   monitor layer   │  │
-│  │  device / group / floor /     │  │  logger / relay   │  │
-│  │  protocol / audio relay       │  │  testtone         │  │
+│  │  device / floor / protocol    │  │  logger / relay   │  │
+│  │  loopback / audio relay       │  │                   │  │
 │  └───────────────────────────────┘  └───────────────────┘  │
 └──────────┬───────────────┬──────────────────────────────────┘
            │ UDP:6000      │ UDP:6001
@@ -1469,7 +1309,7 @@ Web Audio API（AudioContext）で再生
 
 ---
 
-### 13.2 デバイスファームウェア アーキテクチャ
+### 14.2 デバイスファームウェア アーキテクチャ
 
 #### ディレクトリ構成
 
@@ -1479,27 +1319,29 @@ transceiver/
 │   ├── main.c               # app_main()・起動シーケンス
 │   ├── config.h             # 全体設定定数（ポート番号・タイムアウト等）
 │   └── CMakeLists.txt
-└── components/
-    ├── pmic/                # AXP2101 電源管理IC
-    │   ├── axp2101.c/h      # I2Cレジスタ読み書き
-    │   └── led.c/h          # LED制御（レジスタ0x69）
-    ├── modem/               # SIM7080G モデム管理
-    │   ├── modem.c/h        # 初期化・LTE-M接続・ソケット管理
-    │   └── at_cmd.c/h       # ATコマンド送受信（UART2排他制御）
-    ├── network/             # UDP ソケット通信
-    │   ├── ctrl_client.c/h  # 制御チャンネル（接続・送受信・再接続）
-    │   └── udp_client.c/h   # 音声チャンネル（送受信・キープアライブ）
-    ├── protocol/            # 制御プロトコル
-    │   ├── protocol.c/h     # メッセージのシリアライズ/デシリアライズ
-    │   └── floor_ctrl.c/h   # 送話権（Floor）状態管理
-    ├── audio/               # 音声入出力
-    │   ├── i2s_capture.c/h  # INMP441からPCM取得（I2S DMA）
-    │   ├── i2s_playback.c/h # PCM5102へPCM出力（I2S DMA）
-    │   └── jitter_buf.c/h   # 受信ジッタバッファ
-    ├── codec/               # Opus コーデック
-    │   └── opus_codec.c/h   # エンコード・デコード・PLC
-    └── state/               # システム状態管理
-        └── state_machine.c/h # 状態遷移・イベントグループ管理
+├── components/
+│   ├── pmic/                # AXP2101 電源管理IC
+│   │   ├── axp2101.c/h      # I2Cレジスタ読み書き
+│   │   └── led.c/h          # LED制御（レジスタ0x69）
+│   ├── modem/               # SIM7080G モデム管理
+│   │   ├── modem.c/h        # 初期化・LTE-M接続・ソケット管理
+│   │   └── at_cmd.c/h       # ATコマンド送受信（UART2、Mutex排他制御）
+│   ├── network/             # UDP ソケット通信
+│   │   ├── ctrl_client.c/h  # 制御チャンネル（接続・送受信・再接続）
+│   │   └── udp_client.c/h   # 音声チャンネル（送受信・キープアライブ）
+│   ├── protocol/            # 制御プロトコル
+│   │   ├── protocol.c/h     # メッセージのシリアライズ/デシリアライズ
+│   │   └── floor_ctrl.c/h   # 送話権（Floor）状態管理
+│   ├── audio/               # 音声入出力
+│   │   ├── i2s_capture.c/h  # INMP441からPCM取得（I2S DMA、MIC_GAIN_X=8）
+│   │   ├── i2s_playback.c/h # PCM5102へPCM出力（I2S DMA、SPK_GAIN_X設定）
+│   │   └── jitter_buf.c/h   # 受信ジッタバッファ（深さ8、開始3フレーム）
+│   ├── codec/               # Opus コーデック
+│   │   └── opus_codec.c/h   # エンコード・デコード・PLC（最大25フレーム）
+│   └── state/               # システム状態管理
+│       └── state_machine.c/h # 状態遷移・イベントグループ・PTT/LED/HBタスク
+└── managed_components/
+    └── esp-libopus/         # PSRAM対応Opusライブラリ（カスタム疑似スタック）
 ```
 
 #### コンポーネント依存関係
@@ -1508,31 +1350,18 @@ transceiver/
 main
  ├── pmic        （依存なし）
  ├── modem       ← pmic
- ├── network     ← modem
+ ├── network     ← modem, protocol, state
  ├── protocol    （依存なし）
- ├── audio       （依存なし）
- ├── codec       （依存なし）
- └── state       ← protocol, floor_ctrl, network
+ ├── audio       ← state
+ ├── codec       ← state, audio
+ └── state       ← protocol
       ↑
-  全タスクが state のイベントグループを参照
+  全タスクが state のイベントグループ・キューを参照
 ```
-
-#### 各コンポーネントの責務
-
-| コンポーネント | 責務 | 主なAPI |
-|----------------|------|---------|
-| `pmic` | AXP2101のI2C制御。電源レール有効化、LED制御 | `axp2101_init()`, `led_set()` |
-| `modem` | ATコマンド管理。LTE-M接続、ソケット開閉 | `modem_init()`, `modem_connect()` |
-| `network` | UDP送受信（制御・音声）。再接続ループ、キープアライブ | `ctrl_send()`, `udp_send()`, `udp_recv()` |
-| `protocol` | バイト列 ↔ 構造体の変換。メッセージタイプ定義 | `proto_encode()`, `proto_decode()` |
-| `floor_ctrl` | 送話権の状態保持（GRANTED/DENIED/FREE） | `floor_request()`, `floor_release()` |
-| `audio` | I2S DMAバッファのキャプチャ・再生 | `i2s_capture_start()`, `i2s_play_frame()` |
-| `codec` | OpusエンコードAPI・デコードAPI・PLC（esp-libopus使用） | `opus_encode()`, `opus_decode()` |
-| `state` | FreeRTOSイベントグループの管理。全タスクの状態共有 | `state_set()`, `state_wait()` |
 
 ---
 
-### 13.3 サーバー アーキテクチャ（Python）
+### 14.3 サーバー アーキテクチャ（Python）
 
 #### ディレクトリ構成
 
@@ -1543,6 +1372,7 @@ server/
 ├── protocol.py      # 制御メッセージの定義・シリアライズ
 ├── device.py        # 端末状態管理（登録・削除・アドレス更新）
 ├── floor.py         # 送話権（Floor Control）管理
+├── loopback.py      # ループバック機能（バッファ・折り返し送信）
 ├── ctrl_server.py   # UDP制御チャンネルサーバー（port 6000）
 ├── audio_server.py  # UDP音声中継サーバー（port 6001）
 ├── web_server.py    # WebSocketサーバー（port 8080）
@@ -1558,28 +1388,16 @@ main
  ├── protocol    （依存なし）
  ├── device      ← protocol
  ├── floor       ← device
+ ├── loopback    ← device, protocol
  ├── monitor     ← device
- ├── ctrl_server ← device, floor, protocol, monitor
- ├── audio_server← device, floor, protocol, monitor
- └── web_server  ← monitor
+ ├── ctrl_server ← device, floor, loopback, protocol, monitor
+ ├── audio_server← device, floor, loopback, protocol, monitor
+ └── web_server  ← loopback, monitor
 ```
-
-#### 各モジュールの責務
-
-| モジュール | 責務 |
-|------------|------|
-| `config` | 環境変数の読み込み。ポート・タイムアウト等の設定値管理 |
-| `protocol` | 制御メッセージ構造体・バイト列変換。UDPヘッダー定義 |
-| `device` | 端末の登録・状態管理・UDPアドレスの動的更新（NAPT対応） |
-| `floor` | グループごとの送話権管理。同時に1端末のみ保持 |
-| `monitor` | WebSocket接続管理。デバイス状態・ログ・音声データをブラウザへ配信 |
-| `ctrl_server` | UDP制御チャンネル受信・HELLO/PTT/HEARTBEAT等のメッセージ処理 |
-| `audio_server` | UDP音声パケット受信・同一グループ内端末への中継・モニターへの配信 |
-| `web_server` | WebSocketサーバー（`/ws`エンドポイント）。モニターUI用 |
 
 ---
 
-### 13.4 データフロー
+### 14.4 データフロー
 
 #### 音声送信フロー（端末A → 端末B、同一グループ）
 
@@ -1600,47 +1418,40 @@ main
   │                              │─ UDP: PTT_NOTIFY_STOP►│
 ```
 
-#### モニターへの音声転送フロー
+#### ループバックフロー（ループバックON時）
 
 ```
-[端末A]           [VPSサーバー]           [ブラウザ]
-  │                    │                      │
-  │─ UDP: Opus ───────►│                      │
-  │                    │─ UDP転送 ────────────►[端末B]
-  │                    │─ WS: audio_data ─────►│
-  │                    │   (Base64 Opus)        │ Web Audio API再生
-```
-
-#### 再接続フロー（NAPT切断時）
-
-```
-[端末]                        [サーバー]
-  │                               │
-  │  （NAPTタイムアウト発生）       │
-  │  制御チャンネル切断検知          │
-  │                               │  HEARTBEATタイムアウト（75秒）
-  │                               │  → 端末をdisconnected状態に
-  │                               │  → ログ出力
-  │  UDP ctrl 再接続               │
-  │─── UDP: HELLO ───────────────►│
-  │◄── UDP: HELLO_ACK ────────────│
-  │  UDPキープアライブ送信          │
-  │─── UDP: keepalive ───────────►│  送信元IP:Port を更新
-  │  通常動作再開                   │
+[端末A]                    [VPSサーバー]
+  │                              │
+  │─── UDP: PTT_START ──────────►│
+  │◄── UDP: PTT_START_ACK ───────│
+  │─── UDP: Opusフレーム ────────►│ バッファに蓄積
+  │         （繰り返し）           │
+  │─── UDP: PTT_STOP ───────────►│
+  │                              │ 折り返し開始
+  │◄── UDP: PTT_NOTIFY(0xFF) ────│
+  │◄── UDP: Opusフレーム ─────────│ 20ms間隔で再送
+  │◄── UDP: PTT_NOTIFY_STOP ─────│
 ```
 
 ---
 
-### 13.5 設定管理
+### 14.5 設定管理
 
 #### デバイス側（config.h 定数）
 
 | 定数名 | 型 | 内容 | 値 |
 |--------|----|------|----|
 | `CONFIG_GROUP_ID` | uint8 | 所属グループID | 1 |
-| `CONFIG_SERVER_IP` | string | VPSサーバーIPアドレス | — |
+| `CONFIG_SERVER_IP` | string | VPSサーバーIPアドレス | 要設定 |
 | `CONFIG_CTRL_PORT` | uint16 | UDP制御ポート | 6000 |
 | `CONFIG_UDP_PORT` | uint16 | UDP音声ポート | 6001 |
+| `CONFIG_AUDIO_SAMPLE_RATE` | uint32 | サンプリングレート | 16000 |
+| `CONFIG_OPUS_BITRATE` | uint32 | Opusビットレート | 16000 |
+| `CONFIG_OPUS_FRAME_MS` | uint32 | フレーム長 | 20 |
+| `CONFIG_OPUS_FRAME_SAMPLES` | uint32 | フレームサンプル数 | 320 |
+| `CONFIG_HEARTBEAT_INTERVAL_MS` | uint32 | ハートビート間隔 | 25000 |
+| `CONFIG_PTT_DEBOUNCE_MS` | uint32 | PTTチャタリング除去時間 | 20 |
 
 #### サーバー側（環境変数）
 
@@ -1652,11 +1463,14 @@ main
 | `HEARTBEAT_TIMEOUT` | 端末タイムアウト秒数 | 75 |
 | `LOG_MAX_ENTRIES` | メモリ保持ログ最大件数 | 1000 |
 
+---
+
 ## 15. 将来拡張
 
 | 項目 | 内容 |
 |------|------|
 | ディスプレイ追加 | 小型LCD（SPI/I2C接続）によるUI強化。`display_task`をCore1に追加 |
+| オーディオコーデック置換 | INMP441+PCM5102 → ES8311（ADC+DAC一体型）への移行 |
 | 端末数拡張 | サーバー性能次第でスケールアップ |
 | グループ数拡張 | プロトコルの変更なく対応可能（IDの拡張） |
 | 暗号化 | TLS（制御チャンネル）、SRTP相当（音声チャンネル） |
@@ -1676,14 +1490,9 @@ main
 | LTE-M | Cat-M1とも呼ばれるIoT向けLTE規格。低消費電力・低コスト |
 | Opus | オープンソースの音声コーデック。低ビットレートで高音質 |
 | VPS | Virtual Private Server。中継サーバーとして使用 |
-
-### B. 未決定事項（TBD）
-
-- [x] 制御チャンネルUDPポート番号（6000）、音声チャンネルUDPポート番号（6001）
-- [x] サンプリングレート（8kHz）
-- [x] Opusビットレート（8kbps）
-- [x] 端末IDの採番方式（ESP32-S3 Wi-Fi MACアドレス下4バイト）
-- [x] マイク・スピーカーの接続方式（Icomインカム、2.5mm/3.5mmジャック、配線極性は要実機確認）
-- [x] サーバー実装言語・OS（Python 3.11 / Debian）
-- [x] HEARTBEATの送信間隔（25秒）・タイムアウト閾値（75秒、3回欠損で切断）
-- [x] グループ切替操作（現フェーズはconfig.h固定値、将来フェーズでボタン追加）
+| PLC | Packet Loss Concealment。パケットロス時に音声を補間するOpusの機能 |
+| PSRAM | Pseudo Static RAM。ESP32-S3外付けの大容量RAM（8MB OPI） |
+| NAPT | Network Address Port Translation。SORACOMでのIPアドレス共有方式 |
+| DTX | Discontinued Transmission。無音区間を検出して送信を抑制する機能（本プロジェクトでは無効） |
+| PSM | Power Saving Mode。モデムのスリープ機能（本プロジェクトでは無効化） |
+| eDRX | Extended Discontinuous Reception。受信間隔を延ばす省電力機能（本プロジェクトでは無効化） |
