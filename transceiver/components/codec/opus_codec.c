@@ -30,10 +30,6 @@ esp_err_t opus_codec_init(void)
     opus_encoder_ctl(s_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(s_encoder, OPUS_SET_INBAND_FEC(1));
     opus_encoder_ctl(s_encoder, OPUS_SET_PACKET_LOSS_PERC(5));
-    // DTX: 無音区間を最小サイズ（1〜2B）のパケットで送信し、
-    // ノイズゲートで除去しきれなかった低レベルノイズの帯域消費を抑える。
-    // 受信側は DTX パケットを PLC で補完するため、途切れは最小限。
-    opus_encoder_ctl(s_encoder, OPUS_SET_DTX(1));
 
     // デコーダ初期化（Step 7で使用）
     s_decoder = opus_decoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS, &err);

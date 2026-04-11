@@ -7,7 +7,6 @@
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
 #include <string.h>
-#include <math.h>
 
 // 音質テスト用: 1 に設定するとマイクの代わりに 1kHz 正弦波を送信する
 // テスト完了後は 0 に戻すこと
@@ -23,11 +22,6 @@ static const char *TAG = "i2s_capture";
 // RF がマイク電源・信号線に結合し可聴域ノイズを生じやすい。
 #define MIC_GAIN_X  8
 
-// ノイズゲート: 1フレームの RMS がこの値未満なら無音フレームとして送信する。
-// LTE 干渉ノイズ（raw >>16 で ~10-30 samples）は MIC_GAIN_X=8 後に ~80-240 RMS。
-// 通常会話（raw ~600 samples）は MIC_GAIN_X=8 後に ~3400 RMS。
-// 閾値 300 は干渉ノイズを抑制しつつ通常会話を通す。0 で無効化。
-#define NOISE_GATE_RMS  300
 
 static inline int16_t gain_clamp(int16_t s, int gain)
 {
@@ -151,22 +145,6 @@ void i2s_capture_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-
-        // ノイズゲート: RMS が閾値未満のフレームは無音で上書きする。
-        // LTE-M 電波干渉による常時ノイズを Opus エンコーダに渡さないようにする。
-#if NOISE_GATE_RMS > 0
-        {
-            int64_t sum_sq = 0;
-            for (int i = 0; i < CONFIG_OPUS_FRAME_SAMPLES; i++) {
-                int32_t s = frame.samples[i];
-                sum_sq += (int64_t)s * s;
-            }
-            int32_t rms = (int32_t)sqrtf((float)sum_sq / CONFIG_OPUS_FRAME_SAMPLES);
-            if (rms < NOISE_GATE_RMS) {
-                memset(frame.samples, 0, CONFIG_OPUS_FRAME_SAMPLES * sizeof(int16_t));
-            }
-        }
-#endif
 
         // 送話権保持中のみキューへプッシュ
         if (xEventGroupGetBits(g_system_events) & EVT_FLOOR_GRANTED) {
