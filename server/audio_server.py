@@ -61,7 +61,8 @@ class AudioProtocol(asyncio.DatagramProtocol):
                 self.transport.sendto(data, audio_addr)
 
             # WebSocket モニターへ配信（サブスクライバーがいる場合のみ）
-            if len(data) > 6 and monitor.has_audio_listeners():
+            # ヘッダは 8 バイト（session_id, flags, seq(2), timestamp(2), opus_len(2)）
+            if len(data) > 8 and monitor.has_audio_listeners():
                 asyncio.ensure_future(
-                    monitor.broadcast_audio(group_id, session_id, seq, ts, data[6:])
+                    monitor.broadcast_audio(group_id, session_id, seq, ts, data[8:])
                 )

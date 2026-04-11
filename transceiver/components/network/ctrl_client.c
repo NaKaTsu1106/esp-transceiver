@@ -149,20 +149,27 @@ void ctrl_task(void *arg)
         while (1) {
             // 送信キューをドレイン
             ctrl_msg_t tx_msg;
+            bool just_sent = false;
             while (xQueueReceive(g_ctrl_tx_queue, &tx_msg, 0) == pdTRUE) {
                 if (ctrl_send(&tx_msg) != ESP_OK) {
                     ESP_LOGE(TAG, "ctrl_task: send failed");
                     goto reconnect;
                 }
+                just_sent = true;
             }
 
-            // 受信（100ms タイムアウト）
-            // 注意: モデムは CARECV に ~5ms で応答するため 500ms タイムアウトは
-            // 実質ノーウェイトになり、ループがビジー状態でミューテックスを連続保持する。
-            // タイムアウトを 100ms に抑え、かつ受信後に 80ms 解放して
-            // udp_tx_task が音声フレームを送信できる時間を確保する。
+            // PTT 押下中かつフロア未取得: fast poll モード（50ms recv, sleep なし）
+            // → PTT_START_ACK を最速で検出する。
+            // 通常モード: 100ms recv + 80ms sleep でudp_tx に 4フレーム分の
+            // mutex 保持時間を確保する。
+            EventBits_t bits = xEventGroupGetBits(g_system_events);
+            bool fast_mode = just_sent ||
+                             ((bits & EVT_PTT_PRESSED) && !(bits & EVT_FLOOR_GRANTED));
+            uint32_t recv_timeout_ms = fast_mode ? 50 : 100;
+            uint32_t sleep_ms        = fast_mode ?  0 :  80;
+
             ctrl_msg_t rx_msg;
-            int rc = recv_one_msg(&rx_msg, 100);
+            int rc = recv_one_msg(&rx_msg, recv_timeout_ms);
             if (rc < 0) {
                 ESP_LOGE(TAG, "ctrl_task: recv error");
                 goto reconnect;
@@ -175,20 +182,17 @@ void ctrl_task(void *arg)
                 // 届くことがあるが state_machine では不要なので捨てる。
                 if (rx_msg.type == MSG_HELLO_ACK) {
                     ESP_LOGD(TAG, "ctrl_task: late HELLO_ACK ignored");
-                }  else {
+                } else {
                     if (xQueueSend(g_ctrl_rx_queue, &rx_msg, 0) != pdTRUE) {
                         ESP_LOGW(TAG, "ctrl_task: ctrl_rx_queue full, dropping 0x%02X",
                                  rx_msg.type);
                     }
                 }
             }
-            // 80ms 待機。
-            // modem_udp_send は flush + prompt待ち(~10ms) + OK待ち(~10ms) で
-            // 1フレームあたり約20ms ミューテックスを保持する。ctrl が20ms ごとに
-            // CARECV(~10ms)を発行すると音声フレームの送信サイクルを妨害する。
-            // 80ms 待機にすることで udp_tx が 4フレーム分(~80ms)を連続送信できる
-            // 時間を確保し、その後 ctrl が CARECV を 1 回実行する比率にする。
-            vTaskDelay(pdMS_TO_TICKS(80));
+
+            if (sleep_ms > 0) {
+                vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+            }
         }
 
     reconnect:

@@ -1,6 +1,6 @@
 # 実装進捗
 
-最終更新: 2026-04-11
+最終更新: 2026-04-11（音声品質改善・Step 5完了）
 
 ## ステップ一覧
 
@@ -10,8 +10,8 @@
 | Step 2 | PMIC・LED（AXP2101） | ✅ 完了 |
 | Step 3 | モデム起動・LTE-M接続 | ✅ 完了 |
 | Step 4 | リレーサーバー（Python）+ UDP制御接続（デバイス） | ✅ 完了 |
-| Step 5-1 | PTT動作確認（ptt_task → PTT_START → floor grant） | ⬜ 確認待ち |
-| Step 5-2 | 音声送信確認（UDP audio パケットがサーバーに届く） | ⬜ 確認待ち |
+| Step 5-1 | PTT動作確認（ptt_task → PTT_START → floor grant） | ✅ 完了 |
+| Step 5-2 | 音声送信確認（UDP audio パケットがサーバーに届く） | ✅ 完了 |
 | Step 7-1 | `modem_udp_recv` 実装 | ⬜ 未着手 |
 | Step 7-2 | `udp_rx_task` 実装（受信・ジッタバッファ投入） | ⬜ 未着手 |
 | Step 7-3 | `opus_decode_task` 実装 | ⬜ 未着手 |
@@ -109,67 +109,23 @@ ctrl_task
 
 ---
 
-## Step 5-1: PTT動作確認 ⬜
+## Step 5-1: PTT動作確認 ✅
 
-### 前提
+### 完了タスク
 
-以下はすでに実装済み：
-- `ptt_task`: GPIO0 ポーリング、押下で `MSG_PTT_START`、解放で `MSG_PTT_STOP` を `g_ctrl_tx_queue` へ
-- `ctrl_task`: `g_ctrl_tx_queue` をドレインしてサーバーへ UDP 送信
-- `state_machine_task`: `MSG_PTT_START_ACK` → `EVT_FLOOR_GRANTED` セット
-
-### 確認手順
-
-1. デバイスをフラッシュして起動
-2. サーバーモニター UI（`server/web/static/index.html`）を開き、サーバーに接続
-3. PTT ボタン（GPIO0）を押す
-4. デバイスログで確認:
-   ```
-   I ptt_task: PTT pressed
-   I ctrl_task: sent MSG_PTT_START
-   I state_machine: PTT_START_ACK: floor granted
-   ```
-5. サーバーログ / モニター UI で確認:
-   - 端末ステータスが `transmitting` に変化
-   - `PTT_START` / `PTT_START_ACK` のログが出ること
-
-### 合格条件
-
-- [ ] PTT 押下で `EVT_FLOOR_GRANTED` がセット → LED が 4Hz 点滅に変化
-- [ ] PTT 解放で `EVT_FLOOR_GRANTED` がクリア → LED が常時点灯（待機）に戻る
-- [ ] サーバーモニターで端末ステータスが `transmitting` / `standby` と切り替わること
+- [x] PTT 押下で `EVT_FLOOR_GRANTED` がセット → LED が 4Hz 点滅に変化
+- [x] PTT 解放で `EVT_FLOOR_GRANTED` がクリア → LED が常時点灯（待機）に戻る
+- [x] サーバーモニターで端末ステータスが `transmitting` / `standby` と切り替わること
 
 ---
 
-## Step 5-2: 音声送信確認 ⬜
+## Step 5-2: 音声送信確認 ✅
 
-### 前提
+### 完了タスク
 
-Step 6 で実装済みの送信パイプライン：
-```
-i2s_capture_task  →[g_pcm_encode_queue]→  opus_encode_task  →[g_encoded_tx_queue]→  udp_tx_task
-```
-- `i2s_capture_task`: `EVT_FLOOR_GRANTED` 時のみ `g_pcm_encode_queue` にプッシュ
-- `udp_tx_task`: `g_encoded_tx_queue` からフレームを取り出し UDP 送信（6001番ポート）
-
-### 確認手順
-
-1. Step 5-1 が合格していること
-2. PTT ボタンを押してマイクに向かって話す
-3. モニター UI でモニター開始ボタンを押して音声を受信
-4. デバイスログで確認:
-   ```
-   D opus_encode_task: encoded 160 samples → N bytes
-   D udp_tx_task: sent audio frame seq=X
-   ```
-5. サーバーログで確認:
-   - `audio_server.py` が UDP パケットを受信していること
-
-### 合格条件
-
-- [ ] PTT 中にデバイスから UDP 音声パケットが継続送信される
-- [ ] サーバーがパケットを受信・中継する（サーバーログに audio relay のログが出る）
-- [ ] モニター UI の音声モニターで音声が再生される（WebCodecs または opusscript）
+- [x] PTT 中にデバイスから UDP 音声パケットが継続送信される
+- [x] サーバーがパケットを受信・中継する
+- [x] モニター UI の音声モニターで音声が再生される（WebCodecs / Chrome）
 
 ---
 
@@ -177,19 +133,37 @@ i2s_capture_task  →[g_pcm_encode_queue]→  opus_encode_task  →[g_encoded_tx
 
 ### 完了タスク
 
-- [x] `config.h`: I2S GPIO ピン定義追加
-- [x] `state_machine.h`: `pcm_frame_t`, `encoded_frame_t`, `g_pcm_encode_queue`, `g_encoded_tx_queue` 追加
+- [x] `config.h`: I2S GPIO ピン定義追加、サンプルレート 16kHz・ビットレート 16kbps に設定
+- [x] `state_machine.h`: `pcm_frame_t`（320サンプル, `CONFIG_OPUS_FRAME_SAMPLES`）, `encoded_frame_t`, キュー追加
 - [x] `state_machine.c`: 音声キュー作成（`state_machine_init()`）
-- [x] `i2s_capture.c`: INMP441実装（8kHz, 32bit slot, 16bit変換）
-- [x] `opus_codec.c`: エンコーダ実装（8kbps, complexity=3, `opus_encode_task`）
+- [x] `i2s_capture.c`: INMP441実装（16kHz, 32bit slot, 16bit変換, MIC_GAIN_X=4）
+- [x] `opus_codec.c`: エンコーダ実装（16kbps, complexity=5, FEC有効, `opus_encode_task`）
 - [x] `modem.h/c`: `modem_udp_open()`, `modem_udp_send()`, `modem_udp_close()` 実装
 - [x] `udp_client.c`: `udp_tx_task` 実装（EVT_CONNECTED待機、キープアライブ25s）
+
+### 音声設定
+
+| 項目 | 値 |
+|------|----|
+| サンプルレート | 16kHz |
+| ビットレート | 16kbps |
+| フレーム長 | 20ms（320サンプル） |
+| エンコード品質 | complexity=5 |
+| FEC | 有効（パケットロス想定 10%）|
+| マイクゲイン | 4倍（INMP441 低感度補正）|
 
 ### 音声パイプライン（送信）
 
 ```
 i2s_capture_task → [g_pcm_encode_queue] → opus_encode_task → [g_encoded_tx_queue] → udp_tx_task
 ```
+
+### 関連バグ修正（Step 5〜6 作業中に対処）
+
+- **UDP send: no prompt 交互失敗**: `uart_flush_input` + `pbuf[128]` + OK消費で解決
+- **LTE 約7分後切断（PSM）**: `AT+CPSMS=0` + `AT+CEDRXS=0` で PSM 無効化
+- **モデム自発リセット後の復旧**: `modem_ensure_network()` 追加、CAOPEN 連続失敗時に呼び出し
+- **モニター音声が再生されない（WebCodecs 48kHz問題）**: ChromeのOpusデコーダが常に48kHz出力するため `audioData.sampleRate` を動的参照に修正
 
 ---
 
@@ -265,7 +239,7 @@ udp_rx_task
 
 ```
 opus_decode_task
-  → Opus デコーダ初期化（8kHz, mono）
+  → Opus デコーダ初期化（16kHz, mono）
   → EVT_CONNECTED 待機
   → ループ（20ms 周期）:
       jitter_buf_pop(&frame)
@@ -295,7 +269,7 @@ opus_decode_task
 
 ```
 i2s_playback_task
-  → I2S 初期化（8kHz, 16bit, mono, PCM5102向け設定）
+  → I2S 初期化（16kHz, 32bit slot stereo, PCM5102向け設定）
   → ループ:
       g_pcm_playback_queue から pcm_frame_t を受信（待機）
       i2s_channel_write(pcm, samples * 2bytes)

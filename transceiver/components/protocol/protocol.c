@@ -30,12 +30,14 @@ int proto_decode(const uint8_t *buf, size_t len, ctrl_msg_t *msg)
 
 void proto_build_udp_header(udp_header_t *hdr, uint8_t session_id,
                               uint8_t type, uint8_t group_id,
-                              uint16_t seq, uint16_t timestamp)
+                              uint16_t seq, uint16_t timestamp,
+                              uint16_t opus_len)
 {
     hdr->session_id = session_id;
     hdr->flags      = ((type & 0x01) << 7) | (group_id & 0x0F);
     hdr->seq        = seq;
     hdr->timestamp  = timestamp;
+    hdr->opus_len   = opus_len;
 }
 
 uint8_t proto_udp_type(const udp_header_t *hdr)

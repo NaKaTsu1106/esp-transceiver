@@ -22,11 +22,15 @@ extern EventGroupHandle_t g_system_events;
 extern QueueHandle_t g_ctrl_tx_queue;
 extern QueueHandle_t g_ctrl_rx_queue;
 
-// 音声パイプラインキュー
+// 音声パイプラインキュー（送信）
 // g_pcm_encode_queue:  i2s_capture_task → opus_encode_task (pcm_frame_t)
 // g_encoded_tx_queue:  opus_encode_task → udp_tx_task       (encoded_frame_t)
 extern QueueHandle_t g_pcm_encode_queue;
 extern QueueHandle_t g_encoded_tx_queue;
+
+// 音声パイプラインキュー（受信）
+// g_pcm_playback_queue: opus_decode_task → i2s_playback_task (pcm_frame_t)
+extern QueueHandle_t g_pcm_playback_queue;
 
 // PCMフレーム（20ms @ 16kHz = 320サンプル）
 typedef struct {

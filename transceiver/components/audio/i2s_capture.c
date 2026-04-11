@@ -28,14 +28,19 @@ static inline int16_t gain_clamp(int16_t s, int gain)
 }
 
 static i2s_chan_handle_t s_rx_chan = NULL;
+static i2s_chan_handle_t s_tx_chan = NULL;
+
+i2s_chan_handle_t i2s_get_tx_chan(void) { return s_tx_chan; }
 
 esp_err_t i2s_capture_init(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
+    // INMP441 (RX) と PCM5102 (TX) は BCK/WS を共有するため、
+    // 同一 I2S ペリフェラル (I2S_NUM_0) でフルデュプレックス初期化する。
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &s_tx_chan, &s_rx_chan));
 
-    // INMP441: Philips I2S, 8kHz, 32bit, ステレオ受信（モノだとRスロットにゴミが混入）
-    i2s_std_config_t std_cfg = {
+    // RX: INMP441 マイク（Philips I2S, 32bit ステレオ、L ch のみ使用）
+    i2s_std_config_t rx_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                          I2S_SLOT_MODE_STEREO),
@@ -45,18 +50,31 @@ esp_err_t i2s_capture_init(void)
             .ws   = CONFIG_I2S_WS_PIN,
             .dout = I2S_GPIO_UNUSED,
             .din  = CONFIG_I2S_DATA_IN_PIN,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv   = false,
-            },
         },
     };
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx_chan, &std_cfg));
-    ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx_chan, &rx_cfg));
 
-    ESP_LOGI(TAG, "i2s_capture_init: OK (BCK=%d WS=%d DIN=%d)",
-             CONFIG_I2S_BCK_PIN, CONFIG_I2S_WS_PIN, CONFIG_I2S_DATA_IN_PIN);
+    // TX: PCM5102A DAC（Philips I2S, 32bit ステレオ、L/R 同一信号）
+    i2s_std_config_t tx_cfg = {
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+                                                         I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = CONFIG_I2S_BCK_PIN,
+            .ws   = CONFIG_I2S_WS_PIN,
+            .dout = CONFIG_I2S_DATA_OUT_PIN,
+            .din  = I2S_GPIO_UNUSED,
+        },
+    };
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_chan, &tx_cfg));
+
+    ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
+    ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
+
+    ESP_LOGI(TAG, "i2s_capture_init: OK (BCK=%d WS=%d DIN=%d DOUT=%d full-duplex)",
+             CONFIG_I2S_BCK_PIN, CONFIG_I2S_WS_PIN,
+             CONFIG_I2S_DATA_IN_PIN, CONFIG_I2S_DATA_OUT_PIN);
     return ESP_OK;
 }
 

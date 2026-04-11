@@ -1,5 +1,6 @@
 #include "opus_codec.h"
 #include "state_machine.h"
+#include "jitter_buf.h"
 #include "config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -28,7 +29,7 @@ esp_err_t opus_codec_init(void)
     opus_encoder_ctl(s_encoder, OPUS_SET_COMPLEXITY(5));
     opus_encoder_ctl(s_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(s_encoder, OPUS_SET_INBAND_FEC(1));
-    opus_encoder_ctl(s_encoder, OPUS_SET_PACKET_LOSS_PERC(10));
+    opus_encoder_ctl(s_encoder, OPUS_SET_PACKET_LOSS_PERC(5));
 
     // デコーダ初期化（Step 7で使用）
     s_decoder = opus_decoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS, &err);
@@ -99,6 +100,73 @@ void opus_encode_task(void *arg)
 
 void opus_decode_task(void *arg)
 {
-    // TODO: Step 7で実装
-    vTaskDelete(NULL);
+    ESP_LOGI(TAG, "opus_decode_task: started");
+
+    uint8_t    opus_buf[256];
+    size_t     opus_len = 0;
+    pcm_frame_t pcm_frame;
+    uint32_t   decode_count = 0;
+
+    while (1) {
+        // EVT_CONNECTED が立つまで待機
+        xEventGroupWaitBits(g_system_events, EVT_CONNECTED,
+                            pdFALSE, pdTRUE, portMAX_DELAY);
+        ESP_LOGI(TAG, "opus_decode_task: connected, starting decode loop");
+
+        while (xEventGroupGetBits(g_system_events) & EVT_CONNECTED) {
+            // ジッタバッファが初期フレーム数に達するまで 1 フレーム周期ずつ待機
+            if (!jitter_buf_ready()) {
+                vTaskDelay(pdMS_TO_TICKS(CONFIG_OPUS_FRAME_MS));
+                continue;
+            }
+
+            int n;
+            if (jitter_buf_pop(opus_buf, &opus_len) == ESP_OK) {
+                // 正常デコード
+                n = opus_codec_decode(opus_buf, opus_len,
+                                      pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES);
+            } else {
+                // パケットロス: EVT_FLOOR_BUSY 中なら Opus PLC で補完
+                if (xEventGroupGetBits(g_system_events) & EVT_FLOOR_BUSY) {
+                    n = opus_codec_decode(NULL, 0,
+                                          pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES);
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(CONFIG_OPUS_FRAME_MS));
+                    continue;
+                }
+            }
+
+            if (n < 0) {
+                ESP_LOGW(TAG, "opus_decode failed: %s (opus_len=%zu)", opus_strerror(n), opus_len);
+                continue;
+            }
+
+            // 診断: 期待サンプル数と不一致なら警告
+            if (n != CONFIG_OPUS_FRAME_SAMPLES) {
+                ESP_LOGW(TAG, "opus_decode: got %d samples (expected %d) opus_len=%zu",
+                         n, CONFIG_OPUS_FRAME_SAMPLES, opus_len);
+            }
+
+            // 50フレームごとにログ（ピーク振幅で音声レベルを確認）
+            decode_count++;
+            if (decode_count % 50 == 0) {
+                int16_t peak = 0;
+                for (int i = 0; i < n && i < CONFIG_OPUS_FRAME_SAMPLES; i++) {
+                    int16_t v = pcm_frame.samples[i] < 0 ? -pcm_frame.samples[i] : pcm_frame.samples[i];
+                    if (v > peak) peak = v;
+                }
+                ESP_LOGI(TAG, "decode: %u frames opus_len=%zu peak=%d",
+                         decode_count, opus_len, peak);
+            }
+
+            // portMAX_DELAY で送信キューをブロック。
+            // キューが満杯（4フレーム=80ms分）のとき opus_decode がここでスリープし、
+            // Core 1 の IDLE1 が CPU を得て WDT をリセットできる。
+            // i2s_playback_task が 20ms ごとにフレームを消費することで自然にペーシングされる。
+            xQueueSend(g_pcm_playback_queue, &pcm_frame, portMAX_DELAY);
+        }
+
+        decode_count = 0;
+        ESP_LOGI(TAG, "opus_decode_task: disconnected");
+    }
 }

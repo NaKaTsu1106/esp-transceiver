@@ -27,18 +27,22 @@ typedef struct {
     uint8_t payload_len;
 } ctrl_msg_t;
 
-// UDPパケットヘッダー（6バイト固定）
+// UDPパケットヘッダー（8バイト固定）
+// SIM7080G の AT+CARECV は複数 UDP データグラムを連結して返すため、
+// 受信側で正確に分割できるよう Opus ペイロード長を明示的に保持する。
 typedef struct __attribute__((packed)) {
     uint8_t  session_id;
     uint8_t  flags;         // bit7=type, bit3-0=group_id
     uint16_t seq;
     uint16_t timestamp;
+    uint16_t opus_len;      // Opusペイロード長（バイト）。KEEPALIVE時は 0
 } udp_header_t;
 
 int  proto_encode(const ctrl_msg_t *msg, uint8_t *buf, size_t buf_len);
 int  proto_decode(const uint8_t *buf, size_t len, ctrl_msg_t *msg);
 void proto_build_udp_header(udp_header_t *hdr, uint8_t session_id,
                              uint8_t type, uint8_t group_id,
-                             uint16_t seq, uint16_t timestamp);
+                             uint16_t seq, uint16_t timestamp,
+                             uint16_t opus_len);
 uint8_t proto_udp_type(const udp_header_t *hdr);
 uint8_t proto_udp_group(const udp_header_t *hdr);
