@@ -65,9 +65,15 @@ void state_machine_task(void *arg)
 
         switch (msg.type) {
         case MSG_PTT_START_ACK:
-            ESP_LOGI(TAG, "PTT_START_ACK: floor granted");
-            xEventGroupClearBits(g_system_events, EVT_FLOOR_BUSY | EVT_FLOOR_FREE);
-            xEventGroupSetBits(g_system_events, EVT_FLOOR_GRANTED);
+            if (xEventGroupGetBits(g_system_events) & EVT_PTT_PRESSED) {
+                ESP_LOGI(TAG, "PTT_START_ACK: floor granted");
+                xEventGroupClearBits(g_system_events, EVT_FLOOR_BUSY | EVT_FLOOR_FREE);
+                xEventGroupSetBits(g_system_events, EVT_FLOOR_GRANTED);
+            } else {
+                // PTT がすでに解放済み: ACK が遅延して到着したケース
+                // MSG_PTT_STOP はすでに送信済みのため FLOOR_GRANTED はセットしない
+                ESP_LOGW(TAG, "PTT_START_ACK: PTT already released, discarding late ACK");
+            }
             break;
 
         case MSG_PTT_START_DENY:

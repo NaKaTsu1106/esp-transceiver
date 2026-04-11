@@ -69,9 +69,6 @@ void i2s_playback_task(void *arg)
     }
 
 #else
-    static uint32_t play_data_count    = 0;
-    static uint32_t play_silence_count = 0;
-
     while (1) {
         pcm_frame_t frame;
         if (xQueueReceive(g_pcm_playback_queue, &frame, pdMS_TO_TICKS(25)) == pdTRUE) {
@@ -80,28 +77,9 @@ void i2s_playback_task(void *arg)
                 tx_buf[i * 2]     = s;  // L
                 tx_buf[i * 2 + 1] = s;  // R (同一)
             }
-            play_data_count++;
-
-            // 50フレームごとにピーク振幅を診断
-            if (play_data_count % 50 == 0) {
-                int16_t peak = 0;
-                for (int i = 0; i < CONFIG_OPUS_FRAME_SAMPLES; i++) {
-                    int16_t v = frame.samples[i] < 0 ? -frame.samples[i] : frame.samples[i];
-                    if (v > peak) peak = v;
-                }
-                ESP_LOGI(TAG, "playback[%u]: peak=%d silence=%u",
-                         play_data_count, peak, play_silence_count);
-            }
         } else {
             // データなし: DMA バッファの残留ノイズを無音で上書き
             memset(tx_buf, 0, sizeof(tx_buf));
-            play_silence_count++;
-
-            // 無音が 50 フレーム連続したら警告（キュー枯渇の兆候）
-            if (play_silence_count % 50 == 0 && play_data_count > 0) {
-                ESP_LOGW(TAG, "playback: silence %u frames (data=%u)",
-                         play_silence_count, play_data_count);
-            }
         }
 
         i2s_channel_write(tx, tx_buf, sizeof(tx_buf), &bytes_written, portMAX_DELAY);
