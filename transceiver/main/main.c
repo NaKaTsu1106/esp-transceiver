@@ -12,37 +12,12 @@
 #include "i2s_playback.h"
 #include "opus_codec.h"
 #include "state_machine.h"
-#include "loopback_test.h"
-#include "lte_test.h"
-
-// ローカルループバックテスト:
-//   1 → マイク音声を Opus エンコード→デコードしてスピーカーから出力する。
-//       LTE・サーバー不要。音声パイプラインの単体検証に使用する。
-//   0 → 通常動作（LTE 接続・PTT トランシーバー）
-#define TEST_LOOPBACK_ENABLE  0
-
-// LTE TX/RX 往復試験:
-//   1 → 音声と同等の 50B/20ms テストパケットを LTE→サーバー→LTE で往復させ、
-//       パターン検証・パケットロスをシリアルログに出力する。
-//       サーバー側で LTE_TEST_ECHO=True が必要（audio_server.py 参照）。
-//   0 → 通常動作
-#define TEST_LTE_ENABLE  0
 
 static const char *TAG = "main";
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== IP Transceiver Boot ===");
-
-#if TEST_LOOPBACK_ENABLE
-    // ローカルループバックテスト: PMIC・I2S のみ初期化して即ループバック開始
-    ESP_LOGI(TAG, "[Phase 2] PMIC init");
-    ESP_ERROR_CHECK(axp2101_init());
-    ESP_ERROR_CHECK(led_init());
-    led_set(CHGLED_ON);   // テスト中は常時点灯
-    loopback_run();
-    return;  // 以降の通常起動シーケンスは実行しない
-#endif
 
     // Phase 1: ESP32-S3 初期化
     ESP_LOGI(TAG, "[Phase 1] System init");
@@ -119,11 +94,4 @@ void app_main(void)
     xTaskCreatePinnedToCore(led_task,          "led",       2048,  NULL,  3, NULL, 1);
 
     ESP_LOGI(TAG, "All tasks started.");
-
-#if TEST_LTE_ENABLE
-    // LTE TX/RX 往復試験: 通常タスク起動後に TX タスクを追加起動する。
-    // サーバーが LTE_TEST_ECHO=True で動作している必要がある。
-    lte_test_run();
-    ESP_LOGI(TAG, "[LTE-TEST] TX/RX test started — check serial for PASS/FAIL/LOSS logs");
-#endif
 }

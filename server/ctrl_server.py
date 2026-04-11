@@ -7,18 +7,12 @@ import logging
 
 import device
 import floor
+import loopback
 import monitor
 import protocol
 
 logger = logging.getLogger("ctrl")
 
-
-_ctrl_transport = None
-
-
-def get_transport():
-    """トーン送信など外部から制御UDPソケットを利用する際に呼び出す。"""
-    return _ctrl_transport
 
 
 class CtrlProtocol(asyncio.DatagramProtocol):
@@ -26,9 +20,7 @@ class CtrlProtocol(asyncio.DatagramProtocol):
         self.transport = None
 
     def connection_made(self, transport):
-        global _ctrl_transport
-        self.transport   = transport
-        _ctrl_transport  = transport
+        self.transport = transport
         logger.info(f"Control UDP ready on {transport.get_extra_info('sockname')}")
 
     def datagram_received(self, data: bytes, addr: tuple):
@@ -108,6 +100,9 @@ class CtrlProtocol(asyncio.DatagramProtocol):
                     f"PTT_STOP session={d.session_id} group={d.group_id}")
         await monitor.broadcast_device_update()
         self._send_to_group(d.group_id, d.session_id, protocol.make_ptt_notify_stop())
+
+        if loopback.is_enabled():
+            asyncio.ensure_future(loopback.flush(d.session_id))
 
     async def _on_heartbeat(self, addr: tuple):
         d = device.find_by_ctrl_addr(addr)

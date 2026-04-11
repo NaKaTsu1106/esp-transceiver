@@ -10,6 +10,7 @@ import websockets
 import config
 import device
 import floor
+import loopback
 import monitor
 from audio_server import AudioProtocol
 from ctrl_server import CtrlProtocol
@@ -63,6 +64,9 @@ async def main() -> None:
         AudioProtocol,
         local_addr=("0.0.0.0", cfg.udp_port),
     )
+
+    # ループバックモジュールにトランスポートを登録
+    loopback.init(ctrl_transport, audio_transport)
 
     # タイムアウト監視タスク
     asyncio.create_task(reaper_task(cfg.heartbeat_timeout))

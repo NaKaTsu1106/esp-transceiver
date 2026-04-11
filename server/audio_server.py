@@ -7,25 +7,11 @@ import logging
 
 import device
 import floor
+import loopback
 import monitor
 import protocol
 
 logger = logging.getLogger("audio")
-
-# LTE TX 試験: True にするとデバイスからのテストパケットをカウントしてログ出力する。
-# テストパケットはペイロード先頭 2 バイトが 0xAA 0x55 のもの（session は通常 ID）。
-# 通常動作では False に戻すこと。
-LTE_TEST_LOG = True
-
-_lte_test_state: dict = {}   # session_id → {"next_seq": int, "pass": int, "loss": int}
-
-
-_audio_transport = None
-
-
-def get_transport():
-    """トーン送信など外部から音声UDPソケットを利用する際に呼び出す。"""
-    return _audio_transport
 
 
 class AudioProtocol(asyncio.DatagramProtocol):
@@ -33,9 +19,7 @@ class AudioProtocol(asyncio.DatagramProtocol):
         self.transport = None
 
     def connection_made(self, transport):
-        global _audio_transport
-        self.transport   = transport
-        _audio_transport = transport
+        self.transport = transport
         logger.info(f"Audio UDP ready on {transport.get_extra_info('sockname')}")
 
     def datagram_received(self, data: bytes, addr: tuple):
@@ -64,37 +48,22 @@ class AudioProtocol(asyncio.DatagramProtocol):
             return
 
         if pkt_type == protocol.UDP_TYPE_AUDIO:
-            # LTE TX 試験: デバイスから届いたテストパケットをカウント・ログ出力する。
-            # ペイロードは UDP ヘッダ 8B 以降。0xAA 0x55 で判定。
-            if LTE_TEST_LOG and len(data) >= 12 and data[8] == 0xAA and data[9] == 0x55:
-                rx_seq = data[10] | (data[11] << 8)
-                st = _lte_test_state.setdefault(session_id,
-                                                {"next_seq": rx_seq, "pass": 0, "loss": 0})
-                gap = (rx_seq - st["next_seq"]) & 0xFFFF
-                if gap > 0:
-                    st["loss"] += gap
-                    logger.warning(f"LTE-TEST LOSS session={session_id}: "
-                                   f"expected={st['next_seq']} got={rx_seq} gap={gap} "
-                                   f"(total_loss={st['loss']})")
-                st["next_seq"] = (rx_seq + 1) & 0xFFFF
-                st["pass"] += 1
-                if st["pass"] % 50 == 0:
-                    logger.info(f"LTE-TEST RX session={session_id}: "
-                                f"pass={st['pass']} loss={st['loss']} seq={rx_seq}")
-                return
-
-            # 送話権を持つ端末のパケットのみ中継
+            # 送話権を持つ端末のパケットのみ処理
             if floor.holder(group_id) != session_id:
                 return
 
-            for target in device.all_in_group(group_id):
-                if target.session_id == session_id:
-                    continue
-                audio_addr = device.get_audio_addr(target.session_id)
-                if audio_addr is None:
-                    logger.debug(f"Audio relay: no audio addr for session {target.session_id}")
-                    continue
-                self.transport.sendto(data, audio_addr)
+            if loopback.is_enabled():
+                # ループバック有効: 他端末へは中継せず蓄積する
+                loopback.push(session_id, data)
+            else:
+                for target in device.all_in_group(group_id):
+                    if target.session_id == session_id:
+                        continue
+                    audio_addr = device.get_audio_addr(target.session_id)
+                    if audio_addr is None:
+                        logger.debug(f"Audio relay: no audio addr for session {target.session_id}")
+                        continue
+                    self.transport.sendto(data, audio_addr)
 
             # WebSocket モニターへ配信（サブスクライバーがいる場合のみ）
             # ヘッダは 8 バイト（session_id, flags, seq(2), timestamp(2), opus_len(2)）

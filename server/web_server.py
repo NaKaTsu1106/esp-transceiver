@@ -10,9 +10,8 @@ import websockets
 import websockets.exceptions
 
 import device as dev_module
+import loopback
 import monitor
-import audio_server
-import tone_sender
 
 logger = logging.getLogger("web")
 
@@ -32,6 +31,10 @@ async def ws_handler(websocket) -> None:
         await websocket.send(json.dumps(
             {"type": "audio_init", "sample_rate": 16000, "channels": 1}))
 
+        # 4. ループバック状態
+        await websocket.send(json.dumps(
+            {"type": "loopback_state", "enabled": loopback.is_enabled()}))
+
         # ---- クライアントメッセージ受信ループ ----
         async for msg in websocket:
             try:
@@ -41,28 +44,12 @@ async def ws_handler(websocket) -> None:
                     monitor.subscribe_audio(websocket)
                 elif action == "unsubscribe_audio":
                     monitor.unsubscribe_audio(websocket)
-                elif action == "send_tone":
-                    group_id    = int(data.get("group", 1))
-                    duration    = int(data.get("duration", 5))
-                    transport   = audio_server.get_transport()
-                    if transport is None:
-                        logger.warning("send_tone: audio transport not ready")
-                    elif tone_sender.is_running():
-                        logger.warning("send_tone: already running")
-                    else:
-                        monitor.log("INFO", "server",
-                                    f"Tone start: group={group_id} duration={duration}s")
-                        tone_sender.start(transport, group_id, duration)
-                elif action == "send_test":
-                    group_id  = int(data.get("group", 1))
-                    count     = int(data.get("count", 50))
-                    transport = audio_server.get_transport()
-                    if transport is None:
-                        logger.warning("send_test: audio transport not ready")
-                    elif tone_sender.is_running():
-                        logger.warning("send_test: already running")
-                    else:
-                        tone_sender.start_test(transport, group_id, count)
+                elif action == "set_loopback":
+                    enabled = bool(data.get("enabled", False))
+                    loopback.set_enabled(enabled)
+                    await websocket.send(json.dumps(
+                        {"type": "loopback_state", "enabled": enabled}))
+
             except Exception:
                 pass
 

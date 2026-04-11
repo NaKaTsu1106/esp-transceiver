@@ -106,6 +106,16 @@ void opus_decode_task(void *arg)
 {
     ESP_LOGI(TAG, "opus_decode_task: started");
 
+    // 疑似スタック（pseudostack）をタスク起動直後に事前確保する。
+    // opus_encode_task が PTT 送信時に先に 60KB を確保すると、
+    // その後のデコーダ確保が失敗して silk_decode_frame でクラッシュする。
+    // ここで PLC 呼び出しを 1 回行い ALLOC_STACK を通過させることで、
+    // エンコーダより先に 60KB を確保する。
+    {
+        int16_t warmup[CONFIG_OPUS_FRAME_SAMPLES];
+        opus_codec_decode(NULL, 0, warmup, CONFIG_OPUS_FRAME_SAMPLES);
+    }
+
     uint8_t    opus_buf[256];
     size_t     opus_len = 0;
     pcm_frame_t pcm_frame;
