@@ -52,6 +52,12 @@
   .monitor-btn.start:hover { background: #2ea043; }
   .monitor-btn.stop   { background: #b62324; color: #fff; }
   .monitor-btn.stop:hover  { background: #f85149; }
+  .monitor-btn.tone   { background: #6e40c9; color: #fff; }
+  .monitor-btn.tone:hover  { background: #8957e5; }
+  .monitor-btn.tone.sending { background: #d29922; }
+  .monitor-btn.test   { background: #1b4332; color: #3fb950; border: 1px solid #238636; }
+  .monitor-btn.test:hover  { background: #238636; color: #fff; }
+  .monitor-btn.test.running { background: #d29922; color: #fff; border-color: #d29922; }
   .monitor-btn:disabled { opacity: 0.4; cursor: default; }
   .group-sel { background: #21262d; border: 1px solid #30363d; color: #e6edf3; border-radius: 4px; padding: 3px 8px; font-size: 12px; }
   #audio-status { font-size: 12px; color: #8b949e; }
@@ -142,6 +148,8 @@
       </select>
       <button class="monitor-btn start" id="btn-start" onclick="startMonitor()">モニター開始</button>
       <button class="monitor-btn stop"  id="btn-stop"  onclick="stopMonitor()" disabled>停止</button>
+      <button class="monitor-btn tone"  id="btn-tone"  onclick="sendTone()">Tone (1kHz/5秒)</button>
+      <button class="monitor-btn test"  id="btn-test"  onclick="sendTest()">ペイロードテスト</button>
       <span id="audio-status">--</span>
       <div class="vu-wrap">
         <span style="font-size:11px;color:#484f58;">レベル</span>
@@ -441,6 +449,58 @@ function setAudioStatus(msg, active) {
   const el = document.getElementById('audio-status');
   el.textContent = msg;
   el.className = active ? 'active' : '';
+}
+
+// ---- ペイロードテスト ----
+let testTimer = null;
+
+function sendTest() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    alert('WebSocket 未接続です');
+    return;
+  }
+  const group = parseInt(document.getElementById('audio-group').value);
+  const count = 50;  // 50パケット = 約1秒
+  const btn   = document.getElementById('btn-test');
+
+  ws.send(JSON.stringify({ action: 'send_test', group: group, count: count }));
+
+  btn.textContent = '送信中...';
+  btn.classList.add('running');
+  btn.disabled = true;
+  if (testTimer) clearTimeout(testTimer);
+  testTimer = setTimeout(() => {
+    btn.textContent = 'ペイロードテスト';
+    btn.classList.remove('running');
+    btn.disabled = false;
+    testTimer = null;
+  }, count * 20 + 500);
+}
+
+// ---- Tone 送信 ----
+let toneTimer = null;
+
+function sendTone() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    alert('WebSocket 未接続です');
+    return;
+  }
+  const group    = parseInt(document.getElementById('audio-group').value);
+  const duration = 5;
+  const btn      = document.getElementById('btn-tone');
+
+  ws.send(JSON.stringify({ action: 'send_tone', group: group, duration: duration }));
+
+  btn.textContent = '送信中...';
+  btn.classList.add('sending');
+  btn.disabled = true;
+  if (toneTimer) clearTimeout(toneTimer);
+  toneTimer = setTimeout(() => {
+    btn.textContent = 'Tone (1kHz/5秒)';
+    btn.classList.remove('sending');
+    btn.disabled = false;
+    toneTimer = null;
+  }, duration * 1000 + 500);
 }
 </script>
 </body>

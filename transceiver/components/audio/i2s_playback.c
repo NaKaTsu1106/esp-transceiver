@@ -17,8 +17,11 @@
 static const char *TAG = "i2s_playback";
 
 // スピーカーゲイン（飽和クランプ付き）。
-// Opus デコード出力はフルスケールの 60〜70% 程度なので 2 倍でちょうどよい。
-#define SPK_GAIN_X  2
+// MIC_GAIN_X=8 の音声入力が Opus encode/decode を経て届く場合、
+// 音声ピーク振幅は概ね 1000〜5000 程度。
+// SPK_GAIN_X=8 で 5000×8=40000 → 32767 クランプ = フルスケール相当。
+// SPK_GAIN_X を上げすぎると正弦波が矩形波に化けて音が歪む。
+#define SPK_GAIN_X  8
 
 static inline int16_t spk_clamp(int16_t s, int gain)
 {
@@ -35,7 +38,7 @@ esp_err_t i2s_playback_init(void)
         ESP_LOGE(TAG, "i2s_playback_init: TX channel not ready (call i2s_capture_init first)");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "i2s_playback_init: OK (DOUT=%d)", CONFIG_I2S_DATA_OUT_PIN);
+    ESP_LOGI(TAG, "i2s_playback_init: OK (DOUT=%d)", CONFIG_I2S_TX_DOUT_PIN);
     return ESP_OK;
 }
 
@@ -66,20 +69,39 @@ void i2s_playback_task(void *arg)
     }
 
 #else
+    static uint32_t play_data_count    = 0;
+    static uint32_t play_silence_count = 0;
+
     while (1) {
         pcm_frame_t frame;
         if (xQueueReceive(g_pcm_playback_queue, &frame, pdMS_TO_TICKS(25)) == pdTRUE) {
-            // int16 モノ → int32 ステレオ（L/R 同一信号）
-            // PCM5102A は 32bit スロット。モノ信号を両チャンネルに複製する。
-            // int16 値を左詰め 32bit に変換: sample << 16
             for (int i = 0; i < CONFIG_OPUS_FRAME_SAMPLES; i++) {
                 int32_t s = (int32_t)spk_clamp(frame.samples[i], SPK_GAIN_X) << 16;
                 tx_buf[i * 2]     = s;  // L
                 tx_buf[i * 2 + 1] = s;  // R (同一)
             }
+            play_data_count++;
+
+            // 50フレームごとにピーク振幅を診断
+            if (play_data_count % 50 == 0) {
+                int16_t peak = 0;
+                for (int i = 0; i < CONFIG_OPUS_FRAME_SAMPLES; i++) {
+                    int16_t v = frame.samples[i] < 0 ? -frame.samples[i] : frame.samples[i];
+                    if (v > peak) peak = v;
+                }
+                ESP_LOGI(TAG, "playback[%u]: peak=%d silence=%u",
+                         play_data_count, peak, play_silence_count);
+            }
         } else {
             // データなし: DMA バッファの残留ノイズを無音で上書き
             memset(tx_buf, 0, sizeof(tx_buf));
+            play_silence_count++;
+
+            // 無音が 50 フレーム連続したら警告（キュー枯渇の兆候）
+            if (play_silence_count % 50 == 0 && play_data_count > 0) {
+                ESP_LOGW(TAG, "playback: silence %u frames (data=%u)",
+                         play_silence_count, play_data_count);
+            }
         }
 
         i2s_channel_write(tx, tx_buf, sizeof(tx_buf), &bytes_written, portMAX_DELAY);

@@ -31,12 +31,17 @@
 #define CONFIG_PMIC_I2C_FREQ    400000      // 400kHz
 
 // =============================================================================
-// I2S ピン設定（INMP441マイク / スピーカー）
+// I2S ピン設定（TX/RX を別ペリフェラルに分離）
 // =============================================================================
-#define CONFIG_I2S_BCK_PIN          18  // Bit Clock
-#define CONFIG_I2S_WS_PIN           8   // Word Select (L/R Clock)
-#define CONFIG_I2S_DATA_IN_PIN      17  // マイク入力（INMP441 SD）
-#define CONFIG_I2S_DATA_OUT_PIN     16  // スピーカー出力
+// TX: PCM5102A スピーカー出力（I2S_NUM_0）
+#define CONFIG_I2S_TX_BCK_PIN       18  // Bit Clock
+#define CONFIG_I2S_TX_WS_PIN        17  // Word Select (L/R Clock)
+#define CONFIG_I2S_TX_DOUT_PIN      16  // データ出力
+
+// RX: INMP441 マイク入力（I2S_NUM_1）
+#define CONFIG_I2S_RX_BCK_PIN       11  // Bit Clock
+#define CONFIG_I2S_RX_WS_PIN        10  // Word Select (L/R Clock)
+#define CONFIG_I2S_RX_DIN_PIN        9  // データ入力
 
 // =============================================================================
 // 音声設定

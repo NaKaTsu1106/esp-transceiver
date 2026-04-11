@@ -158,15 +158,16 @@ void ctrl_task(void *arg)
                 just_sent = true;
             }
 
-            // PTT 押下中かつフロア未取得: fast poll モード（50ms recv, sleep なし）
-            // → PTT_START_ACK を最速で検出する。
-            // 通常モード: 100ms recv + 80ms sleep でudp_tx に 4フレーム分の
-            // mutex 保持時間を確保する。
+            // AT mutex 保持時間を最小化して udp_rx がポーリングできる時間を確保する。
+            // モデムは AT+CARECV に対し通常 5-10ms で応答するため、タイムアウトは
+            // 20ms で十分。100ms にすると 5 パケット分 (100ms) が SIM7080G に滞留し、
+            // jitter buffer がバースト受信→枯渇を繰り返して断続的な無音になる。
+            // fast_mode でも最低 5ms sleep を入れて udp_rx に mutex 取得機会を与える。
             EventBits_t bits = xEventGroupGetBits(g_system_events);
             bool fast_mode = just_sent ||
                              ((bits & EVT_PTT_PRESSED) && !(bits & EVT_FLOOR_GRANTED));
-            uint32_t recv_timeout_ms = fast_mode ? 50 : 100;
-            uint32_t sleep_ms        = fast_mode ?  0 :  80;
+            uint32_t recv_timeout_ms = fast_mode ? 10 :  20;
+            uint32_t sleep_ms        = fast_mode ?  5 :  80;
 
             ctrl_msg_t rx_msg;
             int rc = recv_one_msg(&rx_msg, recv_timeout_ms);

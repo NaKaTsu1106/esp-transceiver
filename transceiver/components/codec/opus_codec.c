@@ -30,6 +30,10 @@ esp_err_t opus_codec_init(void)
     opus_encoder_ctl(s_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(s_encoder, OPUS_SET_INBAND_FEC(1));
     opus_encoder_ctl(s_encoder, OPUS_SET_PACKET_LOSS_PERC(5));
+    // DTX: 無音区間を最小サイズ（1〜2B）のパケットで送信し、
+    // ノイズゲートで除去しきれなかった低レベルノイズの帯域消費を抑える。
+    // 受信側は DTX パケットを PLC で補完するため、途切れは最小限。
+    opus_encoder_ctl(s_encoder, OPUS_SET_DTX(1));
 
     // デコーダ初期化（Step 7で使用）
     s_decoder = opus_decoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS, &err);
@@ -113,10 +117,13 @@ void opus_decode_task(void *arg)
                             pdFALSE, pdTRUE, portMAX_DELAY);
         ESP_LOGI(TAG, "opus_decode_task: connected, starting decode loop");
 
+        uint32_t plc_count = 0;  // 連続 PLC フレーム数
+
         while (xEventGroupGetBits(g_system_events) & EVT_CONNECTED) {
             // ジッタバッファが初期フレーム数に達するまで 1 フレーム周期ずつ待機
             if (!jitter_buf_ready()) {
                 vTaskDelay(pdMS_TO_TICKS(CONFIG_OPUS_FRAME_MS));
+                plc_count = 0;
                 continue;
             }
 
@@ -125,11 +132,16 @@ void opus_decode_task(void *arg)
                 // 正常デコード
                 n = opus_codec_decode(opus_buf, opus_len,
                                       pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES);
+                plc_count = 0;
             } else {
-                // パケットロス: EVT_FLOOR_BUSY 中なら Opus PLC で補完
-                if (xEventGroupGetBits(g_system_events) & EVT_FLOOR_BUSY) {
+                // パケットロス: 最大 25 フレーム(500ms)まで Opus PLC で補完。
+                // LTE-M 経路では 1 秒程度のバーストロスが発生するため、
+                // 5 フレームでは不足して無音になる。Opus PLC は 500ms 程度まで
+                // 実用的な品質を維持できる。超えたら送信終了とみなして待機。
+                if (plc_count < 25) {
                     n = opus_codec_decode(NULL, 0,
                                           pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES);
+                    plc_count++;
                 } else {
                     vTaskDelay(pdMS_TO_TICKS(CONFIG_OPUS_FRAME_MS));
                     continue;

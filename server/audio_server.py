@@ -12,13 +12,30 @@ import protocol
 
 logger = logging.getLogger("audio")
 
+# LTE TX 試験: True にするとデバイスからのテストパケットをカウントしてログ出力する。
+# テストパケットはペイロード先頭 2 バイトが 0xAA 0x55 のもの（session は通常 ID）。
+# 通常動作では False に戻すこと。
+LTE_TEST_LOG = True
+
+_lte_test_state: dict = {}   # session_id → {"next_seq": int, "pass": int, "loss": int}
+
+
+_audio_transport = None
+
+
+def get_transport():
+    """トーン送信など外部から音声UDPソケットを利用する際に呼び出す。"""
+    return _audio_transport
+
 
 class AudioProtocol(asyncio.DatagramProtocol):
     def __init__(self):
         self.transport = None
 
     def connection_made(self, transport):
-        self.transport = transport
+        global _audio_transport
+        self.transport   = transport
+        _audio_transport = transport
         logger.info(f"Audio UDP ready on {transport.get_extra_info('sockname')}")
 
     def datagram_received(self, data: bytes, addr: tuple):
@@ -47,6 +64,25 @@ class AudioProtocol(asyncio.DatagramProtocol):
             return
 
         if pkt_type == protocol.UDP_TYPE_AUDIO:
+            # LTE TX 試験: デバイスから届いたテストパケットをカウント・ログ出力する。
+            # ペイロードは UDP ヘッダ 8B 以降。0xAA 0x55 で判定。
+            if LTE_TEST_LOG and len(data) >= 12 and data[8] == 0xAA and data[9] == 0x55:
+                rx_seq = data[10] | (data[11] << 8)
+                st = _lte_test_state.setdefault(session_id,
+                                                {"next_seq": rx_seq, "pass": 0, "loss": 0})
+                gap = (rx_seq - st["next_seq"]) & 0xFFFF
+                if gap > 0:
+                    st["loss"] += gap
+                    logger.warning(f"LTE-TEST LOSS session={session_id}: "
+                                   f"expected={st['next_seq']} got={rx_seq} gap={gap} "
+                                   f"(total_loss={st['loss']})")
+                st["next_seq"] = (rx_seq + 1) & 0xFFFF
+                st["pass"] += 1
+                if st["pass"] % 50 == 0:
+                    logger.info(f"LTE-TEST RX session={session_id}: "
+                                f"pass={st['pass']} loss={st['loss']} seq={rx_seq}")
+                return
+
             # 送話権を持つ端末のパケットのみ中継
             if floor.holder(group_id) != session_id:
                 return

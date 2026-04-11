@@ -11,6 +11,8 @@ import websockets.exceptions
 
 import device as dev_module
 import monitor
+import audio_server
+import tone_sender
 
 logger = logging.getLogger("web")
 
@@ -39,6 +41,28 @@ async def ws_handler(websocket) -> None:
                     monitor.subscribe_audio(websocket)
                 elif action == "unsubscribe_audio":
                     monitor.unsubscribe_audio(websocket)
+                elif action == "send_tone":
+                    group_id    = int(data.get("group", 1))
+                    duration    = int(data.get("duration", 5))
+                    transport   = audio_server.get_transport()
+                    if transport is None:
+                        logger.warning("send_tone: audio transport not ready")
+                    elif tone_sender.is_running():
+                        logger.warning("send_tone: already running")
+                    else:
+                        monitor.log("INFO", "server",
+                                    f"Tone start: group={group_id} duration={duration}s")
+                        tone_sender.start(transport, group_id, duration)
+                elif action == "send_test":
+                    group_id  = int(data.get("group", 1))
+                    count     = int(data.get("count", 50))
+                    transport = audio_server.get_transport()
+                    if transport is None:
+                        logger.warning("send_test: audio transport not ready")
+                    elif tone_sender.is_running():
+                        logger.warning("send_test: already running")
+                    else:
+                        tone_sender.start_test(transport, group_id, count)
             except Exception:
                 pass
 

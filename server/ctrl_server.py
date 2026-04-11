@@ -13,12 +13,22 @@ import protocol
 logger = logging.getLogger("ctrl")
 
 
+_ctrl_transport = None
+
+
+def get_transport():
+    """トーン送信など外部から制御UDPソケットを利用する際に呼び出す。"""
+    return _ctrl_transport
+
+
 class CtrlProtocol(asyncio.DatagramProtocol):
     def __init__(self):
         self.transport = None
 
     def connection_made(self, transport):
-        self.transport = transport
+        global _ctrl_transport
+        self.transport   = transport
+        _ctrl_transport  = transport
         logger.info(f"Control UDP ready on {transport.get_extra_info('sockname')}")
 
     def datagram_received(self, data: bytes, addr: tuple):

@@ -59,7 +59,10 @@ void udp_rx_task(void *arg)
         ESP_LOGI(TAG, "udp_rx_task: connected, starting receive loop");
 
         // モデムが返す最大バイト数（複数パケット連結を含む）
-        uint8_t buf[8 + 256];
+        // SIM7080G は複数 UDP データグラムを連結して返すため、
+        // バッファが不足すると末尾パケットが途中で切断され次回受信でヘッダ位置がずれる。
+        // 音声パケット 1 つ ≒ 50B × 最大 10 連結 = 500B を余裕を持って収める。
+        uint8_t buf[512];
 
         while (xEventGroupGetBits(g_system_events) & EVT_CONNECTED) {
             size_t got = 0;
@@ -102,10 +105,113 @@ void udp_rx_task(void *arg)
                     continue;
                 }
 
+                // LTE RX 試験（session_id=0xFE, サーバー send_test_payload から送信）
+                // パターン: [0x00, 0x01, ..., 0x1F] × N。シーケンス欠落も検出する。
+                if (hdr->session_id == 0xFE) {
+                    static uint16_t rx_next_seq  = 0;
+                    static uint32_t rx_pass_count = 0;
+                    static uint32_t rx_loss_count = 0;
+                    static bool     rx_first      = true;
+
+                    if (rx_first) {
+                        rx_next_seq = hdr->seq;
+                        rx_first    = false;
+                    }
+
+                    /* シーケンス欠落検出 */
+                    if (hdr->seq != rx_next_seq) {
+                        uint16_t gap = (uint16_t)(hdr->seq - rx_next_seq);
+                        rx_loss_count += gap;
+                        ESP_LOGW(TAG, "LTE-TEST RX LOSS: expected=%u got=%u gap=%u (total=%u)",
+                                 rx_next_seq, hdr->seq, gap, rx_loss_count);
+                    }
+                    rx_next_seq = (uint16_t)(hdr->seq + 1);
+
+                    /* パターン検証 */
+                    const uint8_t *p = buf + offset;
+                    uint16_t fail_pos = 0xFFFF;
+                    for (uint16_t i = 0; i < plen; i++) {
+                        if (p[i] != (uint8_t)(i & 0xFF)) {
+                            fail_pos = i;
+                            break;
+                        }
+                    }
+                    if (fail_pos == 0xFFFF) {
+                        rx_pass_count++;
+                        if (rx_pass_count % 50 == 0) {
+                            ESP_LOGI(TAG, "LTE-TEST RX PASS: seq=%u pass=%u loss=%u",
+                                     hdr->seq, rx_pass_count, rx_loss_count);
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "LTE-TEST RX FAIL: seq=%u byte[%u]=0x%02X expected=0x%02X",
+                                 hdr->seq, fail_pos, p[fail_pos], (uint8_t)(fail_pos & 0xFF));
+                    }
+                    offset += plen;
+                    continue;
+                }
+
                 // 自分自身のパケットは無視（ループバック防止）
                 if (hdr->session_id == g_session_id) {
                     offset += plen;
                     continue;
+                }
+
+                // LTE テストエコーフレーム検証
+                // magic[0xAA 0x55] + seq(2B LE) + pattern[(i-4)&0xFF × 46B] = 50B
+                if (plen >= 4) {
+                    const uint8_t *p = buf + offset;
+                    if (p[0] == 0xAAu && p[1] == 0x55u) {
+                        static uint16_t lte_test_next_seq = 0;
+                        static uint32_t lte_test_pass     = 0;
+                        static uint32_t lte_test_fail     = 0;
+                        static uint32_t lte_test_loss     = 0;
+                        static bool     lte_test_first    = true;
+
+                        uint16_t echo_seq = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
+
+                        if (lte_test_first) {
+                            lte_test_next_seq = echo_seq;
+                            lte_test_first    = false;
+                        }
+
+                        /* シーケンス欠落検出 */
+                        if (echo_seq != lte_test_next_seq) {
+                            uint16_t gap = (uint16_t)(echo_seq - lte_test_next_seq);
+                            lte_test_loss += gap;
+                            ESP_LOGW(TAG, "LTE-TEST LOSS: expected=%u got=%u gap=%u (total_loss=%u)",
+                                     lte_test_next_seq, echo_seq, gap, lte_test_loss);
+                        }
+                        lte_test_next_seq = (uint16_t)(echo_seq + 1);
+
+                        /* パターン検証 */
+                        uint16_t fail_pos = 0xFFFF;
+                        for (uint16_t i = 4; i < plen; i++) {
+                            if (p[i] != (uint8_t)((i - 4) & 0xFF)) {
+                                fail_pos = i;
+                                break;
+                            }
+                        }
+                        if (fail_pos == 0xFFFF) {
+                            lte_test_pass++;
+                            if (lte_test_pass % 50 == 0) {
+                                ESP_LOGI(TAG,
+                                         "LTE-TEST PASS: seq=%u pass=%u fail=%u loss=%u",
+                                         echo_seq, lte_test_pass,
+                                         lte_test_fail, lte_test_loss);
+                            }
+                        } else {
+                            lte_test_fail++;
+                            ESP_LOGW(TAG,
+                                     "LTE-TEST FAIL: seq=%u byte[%u]=0x%02X expected=0x%02X "
+                                     "(pass=%u fail=%u loss=%u)",
+                                     echo_seq, fail_pos, p[fail_pos],
+                                     (uint8_t)((fail_pos - 4) & 0xFF),
+                                     lte_test_pass, lte_test_fail, lte_test_loss);
+                        }
+
+                        offset += plen;
+                        continue;
+                    }
                 }
 
                 if (plen == 0) continue;
