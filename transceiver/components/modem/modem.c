@@ -347,62 +347,60 @@ esp_err_t modem_ensure_network(void)
 // ---------- 内部ヘルパー: バイナリセーフ AT+CARECV ヘッダパーサー ----------
 
 /*
- * "+CARECV: N," をカンマまで読んで N を返す。
- *
- * 問題の背景: at_cmd_wait_line は '\n'(0x0A) で行を区切る。Opus などの
- * バイナリペイロードには 0x0A が含まれるため、ペイロード途中で早期リターン
- * してしまい後半データが欠落していた（→デコーダがゴミを受け取りノイズ発生）。
- *
- * 本関数はカンマ/改行に達するまでのヘッダ部分だけをテキストとして読み、
- * バイナリデータ本体には一切触れない。呼び出し後 N > 0 なら UART は
- * ペイロード先頭バイトに位置しており、at_cmd_read_raw で N バイト直読みできる。
- *
- * 戻り値:  N > 0 = データあり（UART は次の N バイト目に位置する）
- *          0     = データなし
- *         -1     = タイムアウト
+ * +CARECV: N[,<data>] のテキスト部分だけを読み取り、データバイト数 N を返す。
+ * TinyGSM と同じ方式: カンマが現れたら即座に停止し、バイナリデータには触れない。
+ * カンマが現れず改行に達した場合はデータなし（N=0）を意味する。
  */
-static int carecv_parse_len(uint32_t timeout_ms)
+static esp_err_t udp_recv_parse_header(int *out_n, uint32_t timeout_ms)
 {
-    const char *prefix   = "+CARECV: ";
-    char        window[16] = {0};
-    size_t      wpos     = 0;
-    bool        found    = false;
-    char        numstr[8] = {0};
-    size_t      numpos   = 0;
+    const char *prefix    = "+CARECV: ";
+    const size_t plen     = 9;  // strlen("+CARECV: ")
+    char  rbuf[plen + 1];       // ローリングバッファ（プレフィックス検索用）
+    size_t rpos           = 0;
+    bool   prefix_found   = false;
+    char   numstr[8];
+    size_t npos           = 0;
+    TickType_t deadline   = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
 
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    memset(rbuf, 0, sizeof(rbuf));
+    *out_n = 0;
 
     while (xTaskGetTickCount() < deadline) {
         uint8_t c;
-        if (uart_read_bytes(CONFIG_MODEM_UART_NUM, &c, 1, pdMS_TO_TICKS(5)) <= 0) continue;
+        if (uart_read_bytes(CONFIG_MODEM_UART_NUM, &c, 1, pdMS_TO_TICKS(20)) <= 0) {
+            continue;
+        }
 
-        if (!found) {
-            /* スライディングウィンドウでプレフィックスを探す */
-            if (wpos < sizeof(window) - 1) {
-                window[wpos++] = (char)c;
-            } else {
-                memmove(window, window + 1, sizeof(window) - 1);
-                window[sizeof(window) - 2] = (char)c;
-                wpos = sizeof(window) - 1;
-            }
-            window[wpos] = '\0';
-            if (strstr(window, prefix)) {
-                found  = true;
-                numpos = 0;
-                memset(numstr, 0, sizeof(numstr));
+        if (!prefix_found) {
+            // ローリングバッファでプレフィックスを検索
+            rbuf[rpos % plen] = (char)c;
+            rpos++;
+            if (rpos >= plen) {
+                // バッファ内容が prefix と一致するか確認
+                bool match = true;
+                for (size_t i = 0; i < plen; i++) {
+                    if (rbuf[(rpos + i) % plen] != prefix[i]) { match = false; break; }
+                }
+                if (match) prefix_found = true;
             }
         } else {
-            /* プレフィックス後: 数字を収集し、',' でデータあり、改行でデータなし */
-            if (c >= '0' && c <= '9' && numpos < sizeof(numstr) - 1) {
-                numstr[numpos++] = (char)c;
+            // プレフィックス検出後: ASCII数字を読み、カンマまたは改行で終了
+            if (c >= '0' && c <= '9') {
+                if (npos < sizeof(numstr) - 1) numstr[npos++] = (char)c;
             } else if (c == ',') {
-                return (numpos > 0) ? atoi(numstr) : 0;
+                // カンマ = データあり、バイナリデータは UART に残っている
+                numstr[npos] = '\0';
+                *out_n = atoi(numstr);
+                return ESP_OK;
             } else if (c == '\r' || c == '\n') {
-                return 0;   /* データなし */
+                // 改行 = データなし（+CARECV: 0）
+                numstr[npos] = '\0';
+                *out_n = atoi(numstr);
+                return ESP_OK;
             }
         }
     }
-    return -1;  /* タイムアウト */
+    return ESP_ERR_TIMEOUT;
 }
 
 // ---------- 制御チャンネル UDP API（conn_id=0、ポート6000） ----------
@@ -496,23 +494,22 @@ esp_err_t modem_ctrl_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_
     int tx_len = snprintf(tx, sizeof(tx), "AT+CARECV=%d,%zu\r\n", CTRL_CONN_ID, max_len);
     uart_write_bytes(CONFIG_MODEM_UART_NUM, tx, tx_len);
 
-    // carecv_parse_len でカンマまでヘッダを読み N を取得し、
-    // バイナリデータは at_cmd_read_raw で直接 N バイト読む。
-    int n = carecv_parse_len(timeout_ms);
-    if (n < 0) {
+    int n = 0;
+    esp_err_t ret = udp_recv_parse_header(&n, timeout_ms);
+    if (ret != ESP_OK) {
         xSemaphoreGive(s_at_mutex);
         return ESP_ERR_TIMEOUT;
     }
 
-    if (n == 0) {
+    if (n <= 0) {
         char dummy[16];
-        at_cmd_wait_line("OK", dummy, sizeof(dummy), 500);
+        at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
         xSemaphoreGive(s_at_mutex);
-        return ESP_OK;   // データなし（out_len=0）
+        return ESP_OK;
     }
 
     size_t to_read = ((size_t)n < max_len) ? (size_t)n : max_len;
-    esp_err_t ret  = at_cmd_read_raw(buf, to_read, 2000);
+    ret = at_cmd_read_raw(buf, to_read, 2000);
     if (ret == ESP_OK) {
         *out_len = to_read;
         ESP_LOGD(TAG, "Ctrl recv %zu bytes", *out_len);
@@ -647,25 +644,25 @@ esp_err_t modem_udp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
     int tx_len = snprintf(tx, sizeof(tx), "AT+CARECV=%d,%zu\r\n", UDP_CONN_ID, max_len);
     uart_write_bytes(CONFIG_MODEM_UART_NUM, tx, tx_len);
 
-    // carecv_parse_len でカンマまでヘッダを読み N を取得し、
-    // バイナリデータは at_cmd_read_raw で直接 N バイト読む。
-    // 旧実装（at_cmd_wait_line + inline memcpy）は '\n'(0x0A) でペイロードを
-    // 途中打ち切りしていたため、Opus フレームが壊れてノイズになっていた。
-    int n = carecv_parse_len(timeout_ms);
-    if (n < 0) {
+    // テキスト部分のみ解析。カンマで停止し、バイナリデータは UART に残す。
+    int n = 0;
+    esp_err_t ret = udp_recv_parse_header(&n, timeout_ms);
+    if (ret != ESP_OK) {
         xSemaphoreGive(s_at_mutex);
         return ESP_ERR_TIMEOUT;
     }
 
-    if (n == 0) {
+    if (n <= 0) {
+        // データなし: OK を読み捨てて終了
         char dummy[16];
-        at_cmd_wait_line("OK", dummy, sizeof(dummy), 500);
+        at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
         xSemaphoreGive(s_at_mutex);
-        return ESP_OK;   // データなし（out_len=0）
+        return ESP_OK;
     }
 
+    // バイナリデータを UART から直接読む（TinyGSM と同方式）
     size_t to_read = ((size_t)n < max_len) ? (size_t)n : max_len;
-    esp_err_t ret  = at_cmd_read_raw(buf, to_read, 2000);
+    ret = at_cmd_read_raw(buf, to_read, 2000);
     if (ret == ESP_OK) {
         *out_len = to_read;
         ESP_LOGD(TAG, "UDP recv %zu bytes", *out_len);
