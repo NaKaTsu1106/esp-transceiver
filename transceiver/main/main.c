@@ -6,7 +6,7 @@
 #include "axp2101.h"
 #include "led.h"
 #include "modem.h"
-#include "tcp_client.h"
+#include "ctrl_client.h"
 #include "udp_client.h"
 #include "i2s_capture.h"
 #include "i2s_playback.h"
@@ -38,8 +38,8 @@ void app_main(void)
     ESP_ERROR_CHECK(modem_connect());
     state_set(EVT_MODEM_READY);
 
-    // Phase 5: VPSサーバー接続（tcp_taskが担当）
-    ESP_LOGI(TAG, "[Phase 5] Server connect (deferred to tcp_task)");
+    // Phase 5: VPSサーバー接続（ctrl_taskが担当）
+    ESP_LOGI(TAG, "[Phase 5] Server connect (deferred to ctrl_task)");
 
     // Phase 6: I2S・Opus 音声初期化
     ESP_LOGI(TAG, "[Phase 6] Audio init");
@@ -51,7 +51,7 @@ void app_main(void)
     ESP_LOGI(TAG, "[Phase 7] Starting tasks");
 
     // Core 0: 通信系
-    xTaskCreatePinnedToCore(tcp_task,       "tcp",       8192, NULL, 8,  NULL, 0);
+    xTaskCreatePinnedToCore(ctrl_task,      "ctrl",      8192, NULL, 8,  NULL, 0);
     xTaskCreatePinnedToCore(udp_rx_task,    "udp_rx",    4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(udp_tx_task,    "udp_tx",    4096, NULL, 10, NULL, 0);
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 2048, NULL, 5,  NULL, 0);

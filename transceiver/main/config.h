@@ -5,8 +5,8 @@
 // =============================================================================
 // CONFIG_SERVER_IP は menuconfig で設定（Kconfig.projbuild）
 // CONFIG_GROUP_ID  は menuconfig で設定（Kconfig.projbuild）
-#define CONFIG_TCP_PORT         6000
-#define CONFIG_UDP_PORT         6001
+#define CONFIG_CTRL_PORT        6000   // 制御チャンネル（UDP）
+#define CONFIG_UDP_PORT         6001   // 音声チャンネル（UDP）
 
 // =============================================================================
 // モデム設定
@@ -60,7 +60,7 @@
 #define CONFIG_UDP_KEEPALIVE_INTERVAL_MS 25000  // 25秒
 #define CONFIG_PTT_ACK_TIMEOUT_MS       3000    // 3秒
 #define CONFIG_PTT_MAX_HOLD_MS          60000   // 60秒（最大送話時間）
-#define CONFIG_TCP_RECONNECT_MAX_MS     30000   // 最大バックオフ30秒
+#define CONFIG_CTRL_RETRY_MAX_MS        30000   // 最大バックオフ30秒
 
 // =============================================================================
 // FreeRTOS キュー設定

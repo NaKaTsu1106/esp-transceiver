@@ -8,12 +8,17 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', sans-serif; font-size: 14px; display: flex; flex-direction: column; height: 100vh; }
 
-  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
-  header h1 { font-size: 16px; font-weight: 600; color: #58a6ff; }
+  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; flex-wrap: wrap; }
+  header h1 { font-size: 16px; font-weight: 600; color: #58a6ff; flex-shrink: 0; }
   #conn-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
   #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; transition: background 0.3s; }
   #conn-dot.disconnected { background: #f85149; }
   #conn-dot.connecting { background: #d29922; }
+  #server-form { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  #server-input { background: #0d1117; border: 1px solid #30363d; color: #e6edf3; border-radius: 4px; padding: 4px 10px; font-size: 12px; width: 240px; font-family: monospace; }
+  #server-input:focus { outline: none; border-color: #58a6ff; }
+  #server-connect-btn { background: #1f6feb; border: none; color: #fff; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  #server-connect-btn:hover { background: #388bfd; }
 
   main { display: flex; flex-direction: column; flex: 1; overflow: hidden; padding: 16px; gap: 16px; }
 
@@ -83,8 +88,14 @@
 <header>
   <h1>IP Transceiver Monitor</h1>
   <div id="conn-status">
-    <div id="conn-dot" class="connecting"></div>
-    <span id="conn-label">接続中...</span>
+    <div id="conn-dot" class="disconnected"></div>
+    <span id="conn-label">未接続</span>
+  </div>
+  <div id="server-form">
+    <input id="server-input" type="text" placeholder="例: 192.168.1.1:8080 または example.com"
+           autocomplete="off" spellcheck="false"
+           onkeydown="if(event.key==='Enter') connectToServer()">
+    <button id="server-connect-btn" onclick="connectToServer()">接続</button>
   </div>
 </header>
 
@@ -158,35 +169,84 @@
 const visibleLevels = new Set(['INFO', 'WARN', 'ERROR']);
 let autoScroll = true;
 
-// ---- SSE 接続 ----
-function connect() {
+// ---- WebSocket 接続 ----
+let ws = null;
+let audioSubscribed = false;
+let currentServerHost = '';
+let reconnectTimer = null;
+
+function connectToServer() {
+  const input = document.getElementById('server-input').value.trim();
+  if (!input) return;
+
+  // 前の接続・再接続タイマーをリセット
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+
+  currentServerHost = input;
+  localStorage.setItem('wsHost', input);
+  connect(input);
+}
+
+function buildWsUrl(host) {
+  // プロトコルプレフィックスが含まれている場合はそのまま使用
+  if (host.startsWith('ws://') || host.startsWith('wss://')) {
+    return host.endsWith('/ws') ? host : host.replace(/\/$/, '') + '/ws';
+  }
+  // ページが HTTPS なら wss://, HTTP なら ws://
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${scheme}://${host}/ws`;
+}
+
+function connect(host) {
   const dot   = document.getElementById('conn-dot');
   const label = document.getElementById('conn-label');
   dot.className = 'connecting';
   label.textContent = '接続中...';
 
-  const es = new EventSource('/events');
+  const wsUrl = buildWsUrl(host);
+  ws = new WebSocket(wsUrl);
 
-  es.onopen = () => {
+  ws.onopen = () => {
     dot.className = '';
-    label.textContent = '接続済み';
+    label.textContent = `接続済み (${host})`;
+    // 再接続時に音声サブスクライブを復元
+    if (audioSubscribed) {
+      ws.send(JSON.stringify({ action: 'subscribe_audio' }));
+    }
   };
 
-  es.onmessage = (e) => {
+  ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'devices') renderDevices(msg.devices);
-      else if (msg.type === 'log') appendLog(msg);
+      if (msg.type === 'devices' || msg.type === 'snapshot') renderDevices(msg.devices);
+      else if (msg.type === 'log')        appendLog(msg);
+      else if (msg.type === 'audio_init') return;
+      else if (msg.type === 'audio')      handleAudioFrame(msg);
     } catch (_) {}
   };
 
-  es.onerror = () => {
+  ws.onclose = () => {
     dot.className = 'disconnected';
-    label.textContent = '切断 (再接続待ち)';
-    es.close();
-    setTimeout(connect, 3000);
+    label.textContent = '切断 (3秒後に再接続)';
+    ws = null;
+    reconnectTimer = setTimeout(() => connect(currentServerHost), 3000);
+  };
+
+  ws.onerror = () => {
+    ws.close();
   };
 }
+
+// ページロード時: localStorage に保存済みのホストがあれば自動接続
+window.addEventListener('load', () => {
+  const saved = localStorage.getItem('wsHost');
+  if (saved) {
+    document.getElementById('server-input').value = saved;
+    currentServerHost = saved;
+    connect(saved);
+  }
+});
 
 // ---- 端末テーブル ----
 function renderDevices(devices) {
@@ -259,18 +319,16 @@ function clearLogs() {
   document.getElementById('log-output').innerHTML = '';
 }
 
-connect();
+// 自動接続は window.load イベントで処理
 
 // =====================================================================
 // 音声モニター
 // =====================================================================
 let audioCtx = null;
 let audioDecoder = null;
-let audioES = null;
 let nextPlayTime = 0;
 let audioGroup = 1;
 let frameCount = 0;
-let vuTimer = null;
 
 function startMonitor() {
   audioGroup = parseInt(document.getElementById('audio-group').value);
@@ -317,51 +375,46 @@ function startMonitor() {
 
   audioDecoder.configure({ codec: 'opus', sampleRate: 8000, numberOfChannels: 1 });
 
-  // SSE 接続
-  if (audioES) { audioES.close(); audioES = null; }
-  audioES = new EventSource('/audio/events');
+  // WebSocket 経由で音声サブスクライブ
+  audioSubscribed = true;
   frameCount = 0;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'subscribe_audio' }));
+  }
 
-  audioES.onopen = () => {
-    setAudioStatus('受信中... (Group ' + audioGroup + ')', true);
-    document.getElementById('btn-start').disabled = true;
-    document.getElementById('btn-stop').disabled = false;
-    document.getElementById('audio-badge').textContent = '受信中';
-    document.getElementById('audio-badge').style.color = '#3fb950';
-  };
+  setAudioStatus('受信中... (Group ' + audioGroup + ')', true);
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('audio-badge').textContent = '受信中';
+  document.getElementById('audio-badge').style.color = '#3fb950';
+}
 
-  audioES.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'audio_init') return;
-      if (msg.type !== 'audio') return;
-      // グループフィルター（0=全体）
-      if (audioGroup !== 0 && msg.group !== audioGroup) return;
-      if (!audioDecoder || audioDecoder.state === 'closed') return;
+function handleAudioFrame(msg) {
+  // グループフィルター（0=全体）
+  if (audioGroup !== 0 && msg.group !== audioGroup) return;
+  if (!audioDecoder || audioDecoder.state === 'closed') return;
 
-      const raw = atob(msg.data);
-      const opus = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) opus[i] = raw.charCodeAt(i);
+  try {
+    const raw  = atob(msg.data);
+    const opus = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) opus[i] = raw.charCodeAt(i);
 
-      frameCount++;
-      setAudioStatus('受信中... (Group ' + audioGroup + ') ' + frameCount + ' frames', true);
+    frameCount++;
+    setAudioStatus('受信中... (Group ' + audioGroup + ') ' + frameCount + ' frames', true);
 
-      audioDecoder.decode(new EncodedAudioChunk({
-        type: 'key',
-        timestamp: msg.ts * 1000, // ms → μs
-        data: opus
-      }));
-    } catch (_) {}
-  };
-
-  audioES.onerror = () => {
-    setAudioStatus('SSE 切断', false);
-    stopMonitor();
-  };
+    audioDecoder.decode(new EncodedAudioChunk({
+      type:      'key',
+      timestamp: msg.ts * 1000, // ms → μs
+      data:      opus,
+    }));
+  } catch (_) {}
 }
 
 function stopMonitor() {
-  if (audioES) { audioES.close(); audioES = null; }
+  audioSubscribed = false;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'unsubscribe_audio' }));
+  }
   if (audioDecoder && audioDecoder.state !== 'closed') { audioDecoder.close(); audioDecoder = null; }
   document.getElementById('btn-start').disabled = false;
   document.getElementById('btn-stop').disabled = true;

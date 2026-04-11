@@ -15,8 +15,8 @@
 static const char *TAG = "modem";
 
 #define MODEM_RETRY_MAX  3
-#define TCP_CONN_ID      0   // SIM7080G コネクションID固定
-#define UDP_CONN_ID      1   // UDP用コネクションID
+#define CTRL_CONN_ID     0   // 制御チャンネル UDP コネクションID
+#define UDP_CONN_ID      1   // 音声チャンネル UDP コネクションID
 
 // ATコマンド排他ミューテックス（tcp_task からも使用）
 static SemaphoreHandle_t s_at_mutex = NULL;
@@ -267,65 +267,62 @@ esp_err_t modem_get_ip(char *ip_buf, size_t len)
     return ESP_OK;
 }
 
-// ---------- TCP ソケット API ----------
+// ---------- 制御チャンネル UDP API（conn_id=0、ポート6000） ----------
 
-esp_err_t modem_tcp_open(const char *host, uint16_t port)
+esp_err_t modem_ctrl_open(const char *host, uint16_t port)
 {
     xSemaphoreTake(s_at_mutex, portMAX_DELAY);
 
     // 既存コネクションを念のためクローズ（エラー無視）
-    at_cmd_send("AT+CACLOSE=0", "OK", 3000);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    char close_cmd[32];
+    snprintf(close_cmd, sizeof(close_cmd), "AT+CACLOSE=%d", CTRL_CONN_ID);
+    at_cmd_send(close_cmd, "OK", 3000);
+    vTaskDelay(pdMS_TO_TICKS(300));
 
-    // AT+CAOPEN=<connectID>,<pdpidx>,"TCP","<host>",<port>
-    // pdpidx=0: CNCFG/CNACTで管理するアプリネットワーク0を使用
+    // AT+CAOPEN=<connectID>,<pdpidx>,"UDP","<host>",<port>
     char cmd[128];
-    snprintf(cmd, sizeof(cmd), "AT+CAOPEN=%d,0,\"TCP\",\"%s\",%u",
-             TCP_CONN_ID, host, port);
+    snprintf(cmd, sizeof(cmd), "AT+CAOPEN=%d,0,\"UDP\",\"%s\",%u",
+             CTRL_CONN_ID, host, port);
 
-    esp_err_t ret = ESP_ERR_TIMEOUT;
+    esp_err_t ret = ESP_FAIL;
     char resp[128];
-    if (at_cmd_query(cmd, resp, sizeof(resp), 30000) == ESP_OK) {
-        // 成功レスポンス: "+CAOPEN: 0,0"
+    if (at_cmd_query(cmd, resp, sizeof(resp), 15000) == ESP_OK) {
         char expect[16];
-        snprintf(expect, sizeof(expect), "+CAOPEN: %d,0", TCP_CONN_ID);
+        snprintf(expect, sizeof(expect), "+CAOPEN: %d,0", CTRL_CONN_ID);
         if (strstr(resp, expect)) {
-            ESP_LOGI(TAG, "TCP open OK: %s:%u", host, port);
+            ESP_LOGI(TAG, "Ctrl UDP open OK: %s:%u", host, port);
             ret = ESP_OK;
         } else {
-            ESP_LOGE(TAG, "TCP open failed: %s", resp);
-            ret = ESP_FAIL;
+            ESP_LOGE(TAG, "Ctrl UDP open failed: %s", resp);
         }
     } else {
-        ESP_LOGE(TAG, "TCP open timeout");
+        ESP_LOGE(TAG, "Ctrl UDP open timeout");
     }
 
     xSemaphoreGive(s_at_mutex);
     return ret;
 }
 
-esp_err_t modem_tcp_send(const uint8_t *data, size_t len)
+esp_err_t modem_ctrl_send(const uint8_t *data, size_t len)
 {
     xSemaphoreTake(s_at_mutex, portMAX_DELAY);
 
-    // AT+CASEND=<idx>,<len>
     char cmd[32];
-    snprintf(cmd, sizeof(cmd), "AT+CASEND=%d,%zu", TCP_CONN_ID, len);
+    snprintf(cmd, sizeof(cmd), "AT+CASEND=%d,%zu", CTRL_CONN_ID, len);
 
     char resp[64];
     esp_err_t ret = at_cmd_query(cmd, resp, sizeof(resp), 5000);
     if (ret != ESP_OK || !strstr(resp, "> ")) {
-        ESP_LOGE(TAG, "TCP send prompt not received: %s", resp);
+        ESP_LOGE(TAG, "Ctrl send prompt not received: %s", resp);
         xSemaphoreGive(s_at_mutex);
         return ESP_FAIL;
     }
 
-    // データ本体を生バイトで送信
     at_cmd_write_raw(data, len);
 
-    // "OK" 待ち
     memset(resp, 0, sizeof(resp));
     size_t pos = 0;
+    ret = ESP_FAIL;
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
     while (xTaskGetTickCount() < deadline && pos < sizeof(resp) - 1) {
         int n = uart_read_bytes(CONFIG_MODEM_UART_NUM,
@@ -335,38 +332,34 @@ esp_err_t modem_tcp_send(const uint8_t *data, size_t len)
         if (n > 0) {
             pos += n;
             resp[pos] = '\0';
-            if (strstr(resp, "OK\r\n") || strstr(resp, "OK\n")) break;
-            if (strstr(resp, "ERROR"))  { ret = ESP_FAIL; break; }
+            if (strstr(resp, "OK\r\n") || strstr(resp, "OK\n")) { ret = ESP_OK; break; }
+            if (strstr(resp, "ERROR")) break;
         }
     }
 
-    if (ret == ESP_OK && (strstr(resp, "OK\r\n") || strstr(resp, "OK\n"))) {
-        ESP_LOGD(TAG, "TCP sent %zu bytes", len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Ctrl send failed: %s", resp);
     } else {
-        ESP_LOGE(TAG, "TCP send failed: %s", resp);
-        ret = ESP_FAIL;
+        ESP_LOGD(TAG, "Ctrl sent %zu bytes", len);
     }
 
     xSemaphoreGive(s_at_mutex);
     return ret;
 }
 
-esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t timeout_ms)
+esp_err_t modem_ctrl_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t timeout_ms)
 {
     *out_len = 0;
 
     xSemaphoreTake(s_at_mutex, portMAX_DELAY);
 
-    // コマンド送信（UARTフラッシュ → "AT+CARECV=0,N\r\n" 送信）
     uart_flush_input(CONFIG_MODEM_UART_NUM);
     char tx[64];
-    int tx_len = snprintf(tx, sizeof(tx), "AT+CARECV=%d,%zu\r\n", TCP_CONN_ID, max_len);
+    int tx_len = snprintf(tx, sizeof(tx), "AT+CARECV=%d,%zu\r\n", CTRL_CONN_ID, max_len);
     uart_write_bytes(CONFIG_MODEM_UART_NUM, tx, tx_len);
 
     // SIM7080G の AT+CARECV レスポンス形式:
     //   "+CARECV: N,<Nバイトのデータ>\r\n\r\nOK\r\n"
-    // データはカンマ区切りで同行に含まれている。
-    // hdr は "+CARECV: N,<データ>" 行全体を保持できるサイズが必要。
     char hdr[512];
     esp_err_t ret = at_cmd_wait_line("+CARECV: ", hdr, sizeof(hdr), timeout_ms);
     if (ret != ESP_OK) {
@@ -378,25 +371,21 @@ esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
     int n = (p) ? atoi(p + 9) : 0;
 
     if (n <= 0) {
-        // データなし: "\r\nOK\r\n" を読み捨て
         char dummy[16];
         at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
         xSemaphoreGive(s_at_mutex);
-        return ESP_OK;
+        return ESP_OK;   // データなし（out_len=0）
     }
 
     size_t to_read = ((size_t)n < max_len) ? (size_t)n : max_len;
 
-    // カンマを探す: "+CARECV: N,<data>" 形式かどうか
     char *comma = (p) ? strchr(p + 9, ',') : NULL;
     if (comma != NULL) {
-        // データは hdr 内のカンマ直後に格納済み（バイナリセーフ memcpy）
         memcpy(buf, comma + 1, to_read);
         *out_len = to_read;
         ret = ESP_OK;
-        ESP_LOGD(TAG, "TCP recv %zu bytes (inline)", *out_len);
+        ESP_LOGD(TAG, "Ctrl recv %zu bytes (inline)", *out_len);
     } else {
-        // カンマなし: データは UART の次バイトから続く（フォーマットA）
         size_t data_start = 0;
         uint8_t first;
         if (uart_read_bytes(CONFIG_MODEM_UART_NUM, &first, 1, pdMS_TO_TICKS(500)) == 1) {
@@ -411,13 +400,12 @@ esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
         ret = at_cmd_read_raw(buf + data_start, to_read - data_start, 2000);
         if (ret == ESP_OK) {
             *out_len = to_read;
-            ESP_LOGD(TAG, "TCP recv %zu bytes", *out_len);
+            ESP_LOGD(TAG, "Ctrl recv %zu bytes", *out_len);
         } else {
-            ESP_LOGE(TAG, "TCP recv raw read failed");
+            ESP_LOGE(TAG, "Ctrl recv raw read failed");
         }
     }
 
-    // 後続の "\r\nOK\r\n" を読み捨て（エラー無視）
     char dummy[16];
     at_cmd_wait_line("OK", dummy, sizeof(dummy), 1000);
 
@@ -425,12 +413,14 @@ esp_err_t modem_tcp_recv(uint8_t *buf, size_t max_len, size_t *out_len, uint32_t
     return ret;
 }
 
-esp_err_t modem_tcp_close(void)
+esp_err_t modem_ctrl_close(void)
 {
     xSemaphoreTake(s_at_mutex, portMAX_DELAY);
-    esp_err_t ret = at_cmd_send("AT+CACLOSE=0", "OK", 5000);
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "AT+CACLOSE=%d", CTRL_CONN_ID);
+    esp_err_t ret = at_cmd_send(cmd, "OK", 5000);
     xSemaphoreGive(s_at_mutex);
-    ESP_LOGI(TAG, "TCP closed");
+    ESP_LOGI(TAG, "Ctrl UDP closed");
     return ret;
 }
 

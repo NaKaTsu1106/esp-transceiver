@@ -67,7 +67,7 @@ LTE-Mネットワークを介して複数端末間でリアルタイム音声通
 
 | チャンネル | プロトコル | 用途 |
 |------------|------------|------|
-| 制御チャンネル | TCP | PTT状態通知、端末管理、グループ切替 |
+| 制御チャンネル | UDP | PTT状態通知、端末管理、グループ切替 |
 | 音声チャンネル | UDP | 音声データ転送 |
 
 ---
@@ -333,25 +333,26 @@ SORACOM SIMはNAPT（Network Address Port Translation）経由でインターネ
 
 | 対象 | 問題 | 対策 |
 |------|------|------|
-| TCP（制御） | 長時間無通信でNAPTセッションが切断される | HEARTBEATをNAPTタイムアウト（約30秒）以内の間隔で送信する |
-| TCP（制御） | セッション切断後にポートが変わる | 再接続時にHELLOを再送し、サーバーにエンドポイントを再登録する |
+| UDP（制御） | 無音時にNAPTマッピングが消える | HEARTBEATをNAPTタイムアウト（約30秒）以内の間隔で定期送信してマッピングを維持する |
+| UDP（制御） | 送信元ポートが変わる | サーバーはHELLO/HEARTBEATの送信元IP:Portを都度上書き更新し、常に最新アドレスへ制御メッセージを返送する |
 | UDP（音声） | 無音時にNAPTマッピングが消える | 無音時もUDPキープアライブパケットを定期送信してマッピングを維持する |
-| UDP（音声） | セッション切断後に送信元ポートが変わる | サーバーは受信パケットの送信元IP:ポートを都度更新し、常に最新アドレスへ転送する |
+| UDP（音声） | 送信元ポートが変わる | サーバーは受信パケットの送信元IP:ポートを都度更新し、常に最新アドレスへ転送する |
 
 ### 4.4 ポート一覧
 
 | 用途 | プロトコル | ポート番号 |
 |------|------------|------------|
-| 制御チャンネル | TCP | 6000 |
+| 制御チャンネル | UDP | 6000 |
 | 音声チャンネル | UDP | 6001 |
 
 ---
 
 ## 5. プロトコル設計
 
-### 5.1 制御チャンネル（TCP）
+### 5.1 制御チャンネル（UDP）
 
-端末とサーバー間の制御メッセージをTCPで送受信する。
+端末とサーバー間の制御メッセージをUDPで送受信する（ポート6000）。  
+UDPは到達保証がないが、制御メッセージは小サイズかつHEARTBEATによる疎通監視を行うため、アプリケーションレベルの再送は実装しない。
 
 #### 5.1.1 メッセージ形式
 
@@ -360,7 +361,8 @@ SORACOM SIMはNAPT（Network Address Port Translation）経由でインターネ
 ```
 
 ペイロード長はペイロード部分のみのバイト数（メッセージタイプは含まない）。  
-最大ペイロード長は255バイト（全メッセージが十分に収まる）。
+最大ペイロード長は255バイト（全メッセージが十分に収まる）。  
+1つのUDPパケットに1つの制御メッセージを格納する（分割・結合なし）。
 
 #### 5.1.2 メッセージタイプ一覧
 
@@ -386,7 +388,7 @@ SORACOM SIMはNAPT（Network Address Port Translation）経由でインターネ
 #### 5.2.1 UDPパケット形式
 
 パケットサイズを最小化するため、フィールドをビットレベルで詰める。  
-端末IDはサーバーがTCP HELLO_ACKで割り当てる1バイトのセッションIDを使用する。
+端末IDはサーバーが制御UDP HELLO_ACKで割り当てる1バイトのセッションIDを使用する。
 
 ```
 [1バイト: セッションID][1バイト: フラグ][2バイト: シーケンス番号][2バイト: タイムスタンプ][Nバイト: ペイロード]
@@ -442,7 +444,7 @@ audio.Relay(packet)
     └─ 取得したアドレスへUDP送信
 ```
 
-**アドレスが未登録の場合**（TCP接続後、まだUDPを受信していない場合）:
+**アドレスが未登録の場合**（接続後、まだ音声UDPを受信していない場合）:
 - `GetUDPAddr()` は `nil` を返す
 - 該当端末への転送をスキップし、WARNログを出力する
 
@@ -470,7 +472,7 @@ last_udp_sent を監視
 | 待機中・受話中 | `UDP_TYPE_KEEPALIVE` | 25秒 |
 
 キープアライブはHEARTBEATタスクと統合せず、`udp_client` コンポーネント内で独立して管理する。  
-（TCPとUDPのNAPTマッピングは独立しているため、それぞれ維持が必要）
+（制御チャンネルと音声チャンネルのNAPTマッピングは独立しているため、それぞれ維持が必要）
 
 ---
 
@@ -524,7 +526,7 @@ last_udp_sent を監視
 ### 7.2 端末のグループ所属
 
 - 各端末は同時に1つのグループにのみ所属する
-- グループ切替は制御チャンネル（TCP）経由で行う
+- グループ切替は制御チャンネル（UDP）経由で行う
 - 切替中は音声送受信を停止する
 
 ### 7.3 端末管理
@@ -579,27 +581,30 @@ AXP2101のチャージLEDをI2C（レジスタ0x69）で手動制御する。
 |------|------|
 | 種別 | 一般的なVPS |
 | OS | Debian |
-| 実装言語 | Go |
-| モニタリングUI | HTML + JavaScript（デバッグ用途） |
+| 実装言語 | Python 3.11+（asyncio） |
+| 主要依存ライブラリ | `websockets`（WebSocketサーバー）|
+| モニタリングUI | HTML + JavaScript（デバッグ用途、WebSocket受信） |
 
 ### 9.2 サーバーの役割
 
-- 端末からのTCP接続を受け付け、認証・管理を行う
+- 端末からの制御UDP（ポート6000）を受け付け、認証・管理を行う
 - グループごとに送話権（Floor Control）を管理する
-- 音声UDPパケットを同一グループの他端末へ転送する
+- 音声UDPパケット（ポート6001）を同一グループの他端末へ転送する
 - HEARTBEATにより端末の接続状態を監視する
+- WebSocket（ポート8080）でデバッグモニタリングUIを提供する
 
 ### 9.3 サーバー処理フロー
 
 ```
 起動
-├─ TCPリスン開始（制御チャンネル）
-├─ UDPリスン開始（音声チャンネル）
+├─ UDP制御リスン開始（ポート6000）
+├─ UDP音声リスン開始（ポート6001）
+├─ WebSocketサーバー起動（ポート8080）
 └─ 接続待機
 
-端末接続時
-├─ HELLO受信 → 端末登録、グループ割当
-└─ HELLO_ACK送信
+端末接続時（制御UDP）
+├─ HELLO受信 → 端末登録、グループ割当、送信元IP:Port記録
+└─ HELLO_ACK送信（記録したIP:Portへ返送）
 
 PTT_START受信時
 ├─ グループ内送話権が空き → PTT_START_ACK送信 + 他端末へPTT_NOTIFY送信
@@ -613,7 +618,88 @@ PTT_START受信時
 
 PTT_STOP受信時
 └─ 送話権解放 + 他端末へPTT_NOTIFY_STOP送信
+
+タイムアウト監視（定期タスク・10秒間隔）
+└─ 最終受信から75秒以上経過した端末 → セッション削除 + 送話権解放
 ```
+
+### 9.4 Pythonモジュール構成
+
+```
+server/
+├─ main.py               # エントリポイント。asyncio.run() でサーバー群を起動
+├─ config.py             # 設定（環境変数ロード）
+├─ protocol.py           # メッセージ型定数・エンコード/デコード関数
+├─ device.py             # 端末セッション管理（辞書、asyncioシングルスレッドで排他）
+├─ floor.py              # グループ単位の送話権（Floor Control）管理
+├─ ctrl_server.py        # UDP制御サーバー（asyncio.DatagramProtocol）
+├─ audio_server.py       # UDP音声サーバー（asyncio.DatagramProtocol）
+├─ monitor.py            # WebSocketブロードキャスト管理・ログ管理
+└─ web_server.py         # WebSocketサーバー + 静的ファイル配信（HTTP）
+```
+
+#### asyncio構成
+
+すべてのサーバーは単一の asyncio イベントループ上で動作する。  
+スレッドは使用しない。共有状態へのアクセスはコルーチン内（シングルスレッド）で行うため、GILによる排他が得られる。
+
+```
+asyncio.run(main())
+ ├─ loop.create_datagram_endpoint(CtrlProtocol, ...)   # UDP :6000
+ ├─ loop.create_datagram_endpoint(AudioProtocol, ...)  # UDP :6001
+ ├─ asyncio.create_task(reaper_task())                 # タイムアウト監視
+ └─ websockets.serve(ws_handler, "0.0.0.0", 8080)     # WebSocket
+```
+
+### 9.5 WebSocketモニタリングAPI
+
+WebSocketサーバーはポート8080で待ち受ける。静的ファイル（モニタリングUI）は別途HTTPで配信する。
+
+| エンドポイント | プロトコル | 内容 |
+|---------------|-----------|------|
+| `ws://<host>:8080/` | WebSocket | 制御イベント・ログ・端末状態・音声フレームの双方向通信 |
+| `http://<host>:8080/` | HTTP | 静的ファイル配信（`web/static/`） |
+
+#### 接続時の初期配信
+
+WebSocket接続確立直後に、サーバーは以下を順番に送信する。
+
+```
+1. SNAPSHOT イベント（現在の全端末状態）
+2. 直近のログエントリ（最大 LOG_MAX_ENTRIES 件）
+3. audio_init イベント（音声デコーダ初期化情報）
+```
+
+#### サーバー→クライアント イベント形式（JSON）
+
+| `type` 値 | タイミング | 主なフィールド |
+|-----------|-----------|--------------|
+| `"snapshot"` | WebSocket接続時 | `devices` 配列（全端末の現在状態） |
+| `"devices"` | 端末状態変化時 | `devices` 配列（session_id, device_id, group_id, status, connected_at, last_seen） |
+| `"log"` | 各種制御イベント時 | `level`, `device_id`, `message`, `timestamp` |
+| `"audio_init"` | WebSocket接続時 | `sample_rate`=8000, `channels`=1 |
+| `"audio"` | 音声UDPパケット中継時 | `group`, `session`, `seq`, `ts`, `data`（base64 Opus） |
+
+#### クライアント→サーバー メッセージ形式（JSON）
+
+| `action` 値 | 内容 |
+|------------|------|
+| `"subscribe_audio"` | 音声フレームの配信を開始する |
+| `"unsubscribe_audio"` | 音声フレームの配信を停止する |
+
+音声フレームはデータ量が多いため、明示的にサブスクライブした接続にのみ送信する。
+
+### 9.6 設定（環境変数）
+
+| 環境変数 | デフォルト値 | 内容 |
+|---------|------------|------|
+| `CTRL_PORT` | `6000` | UDP制御ポート |
+| `UDP_PORT` | `6001` | UDP音声ポート |
+| `WS_PORT` | `8080` | WebSocketモニターポート |
+| `HEARTBEAT_TIMEOUT` | `75` | セッションタイムアウト（秒） |
+| `LOG_MAX_ENTRIES` | `1000` | SSE配信するログの最大保持数 |
+| `LOG_DIR` | `/var/log/transceiver` | ログファイル保存ディレクトリ（空文字で無効） |
+| `DOMAIN` | `` | HTTPS用ドメイン名（空文字でHTTP動作） |
 
 ---
 
@@ -623,7 +709,7 @@ PTT_STOP受信時
 
 ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信系を**物理的に異なるコアに分離**することで、処理の干渉を防ぎ動作を安定させる。
 
-- **Core 0（PRO_CPU）**: 通信系専用（モデム・TCP・UDP）
+- **Core 0（PRO_CPU）**: 通信系専用（モデム・制御UDP・音声UDP）
 - **Core 1（APP_CPU）**: 音声系専用（I2S・Opusエンコード/デコード）
 
 タスク間のデータ受け渡しはFreeRTOSのキューとイベントグループのみで行い、共有メモリへの直接アクセスは禁止する。
@@ -634,10 +720,10 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
-| `tcp_task` | 8 | 8KB | 制御チャンネル（TCP）の送受信、再接続処理 |
+| `ctrl_task` | 8 | 8KB | 制御チャンネル（UDP）の送受信、再接続処理 |
 | `udp_rx_task` | 10 | 4KB | 音声UDPパケット受信 → 受信キューへ投入 |
 | `udp_tx_task` | 10 | 4KB | 送信キューからパケット取り出し → UDP送信 |
-| `heartbeat_task` | 5 | 2KB | 25秒ごとにHEARTBEATをTCPへ送信 |
+| `heartbeat_task` | 5 | 2KB | 25秒ごとにHEARTBEATを制御UDPへ送信 |
 
 #### Core 1（APP_CPU）— 音声系
 
@@ -663,15 +749,15 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 | `encoded_tx_queue` | `opus_encode_task` | `udp_tx_task` | Opusパケット | 4 |
 | `received_rx_queue` | `udp_rx_task` | `opus_decode_task` | Opusパケット（ジッタバッファ） | 8 |
 | `pcm_playback_queue` | `opus_decode_task` | `i2s_playback_task` | PCMフレーム（20ms分） | 4 |
-| `ctrl_tx_queue` | 各タスク | `tcp_task` | 制御メッセージ構造体 | 8 |
-| `ctrl_rx_queue` | `tcp_task` | `state_machine_task` | 制御メッセージ構造体 | 8 |
+| `ctrl_tx_queue` | 各タスク | `ctrl_task` | 制御メッセージ構造体 | 8 |
+| `ctrl_rx_queue` | `ctrl_task` | `state_machine_task` | 制御メッセージ構造体 | 8 |
 
 #### FreeRTOSイベントグループ（`system_event_group`）
 
 | ビット | 名称 | 意味 |
 |--------|------|------|
 | Bit 0 | `EVT_MODEM_READY` | モデム初期化完了 |
-| Bit 1 | `EVT_CONNECTED` | サーバーへのTCP接続確立 |
+| Bit 1 | `EVT_CONNECTED` | サーバーへの制御UDP接続確立（HELLO_ACK受信済み） |
 | Bit 2 | `EVT_PTT_PRESSED` | PTTボタン押下中 |
 | Bit 3 | `EVT_FLOOR_GRANTED` | 送話権取得済み |
 | Bit 4 | `EVT_FLOOR_BUSY` | 他端末が送話中（受話中） |
@@ -714,9 +800,9 @@ i2s_playback_task (Core1, 優先度15)
 ptt_task: PTTボタン押下検知（チャタリング除去: 20ms）
       ↓ EVT_PTT_PRESSED をイベントグループにセット
       ↓ PTT_START を ctrl_tx_queue へ直接投入
-tcp_task: PTT_START をサーバーへ送信
+ctrl_task: PTT_START をサーバーへ送信
       ↓ PTT_START_ACK 受信
-tcp_task: ctrl_rx_queue へ ACK を投入
+ctrl_task: ctrl_rx_queue へ ACK を投入
       ↓
 state_machine_task: EVT_FLOOR_GRANTED をセット
       ↓
@@ -730,7 +816,7 @@ ptt_task: ボタン解放検知
       ↓ EVT_PTT_PRESSED・EVT_FLOOR_GRANTED をクリア
       ↓ PTT_STOP を ctrl_tx_queue へ直接投入
 i2s_capture_task: キャプチャ停止（キューをフラッシュ）
-tcp_task: PTT_STOP をサーバーへ送信
+ctrl_task: PTT_STOP をサーバーへ送信
 ```
 
 ### 10.6 ジッタバッファ
@@ -749,12 +835,12 @@ tcp_task: PTT_STOP をサーバーへ送信
 SIM7080GへのATコマンドはUART2経由で行うが、`modem`コンポーネントが排他的に管理する。他のタスクがUARTに直接アクセスすることは禁止する。
 
 ```
-tcp_task / udp_tx_task → modem_tcp_open/send/recv/close()
-                              ↓ ATコマンド（UART2、at_cmd.c で排他制御）
-                         SIM7080G モデム
+ctrl_task / udp_tx_task → modem_ctrl_open/send/recv/close()
+                               ↓ ATコマンド（UART2、at_cmd.c で排他制御）
+                          SIM7080G モデム
 ```
 
-ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、TCP送受信が競合しないよう制御する。
+ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、UDP送受信が競合しないよう制御する。
 
 ## 11. 起動シーケンス
 
@@ -776,7 +862,7 @@ ATコマンドの送受信は `at_cmd.c` の排他制御経由で集約し、TCP
 [Phase 4] LTE-M ネットワーク接続
   │
   ▼
-[Phase 5] VPSサーバー接続（TCP/UDP）
+[Phase 5] VPSサーバー接続（UDP ctrl + UDP audio）
   │
   ▼
 [Phase 6] I2S 音声初期化
@@ -867,11 +953,11 @@ UARTを 921600 bps で開く
 
 ### 11.6 Phase 5: VPSサーバー接続
 
-#### TCP接続（制御チャンネル）
+#### UDP接続（制御チャンネル）
 
 | ステップ | 処理 | タイムアウト | 失敗時 |
 |----------|------|------------|--------|
-| 5-1 | TCPソケットオープン（VPS IP:6000） | 15秒 | 30秒待機後に再試行 |
+| 5-1 | UDP ctrlソケットオープン（VPS IP:6000） | 15秒 | 30秒待機後に再試行 |
 | 5-2 | `HELLO`メッセージ送信（端末ID、グループID含む） | — | — |
 | 5-3 | `HELLO_ACK`受信待ち | 10秒 | 再試行 |
 | 5-4 | `EVT_CONNECTED`イベントをセット | — | — |
@@ -901,7 +987,7 @@ UARTを 921600 bps で開く
 全初期化完了後に各タスクを生成する。生成順は依存関係に従う。
 
 ```
-1. tcp_task        (Core0, 優先度8)
+1. ctrl_task       (Core0, 優先度8)
 2. udp_rx_task     (Core0, 優先度10)
 3. udp_tx_task     (Core0, 優先度10)
 4. heartbeat_task  (Core0, 優先度5)
@@ -950,15 +1036,15 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 
 | エラー種別 | 検知方法 | 影響範囲 |
 |-----------|---------|---------|
-| TCP切断 | `recv()`エラー / HEARTBEATタイムアウト | 制御チャンネル全体 |
+| 制御チャンネル切断 | HEARTBEATタイムアウト / HELLO_ACK無応答 | 制御チャンネル全体 |
 | PTT_START無応答 | ACK待ちタイムアウト（3秒） | 送話権取得失敗 |
-| 送話権保持中のTCP切断 | TCP切断検知 | 送話強制終了 |
-| LTE-M切断 | ATコマンドエラー / TCP切断 | 全通信 |
+| 送話権保持中の制御切断 | 制御チャンネル切断検知 | 送話強制終了 |
+| LTE-M切断 | ATコマンドエラー / 制御チャンネル切断 | 全通信 |
 | UDPパケット途絶 | ジッタバッファ枯渇 | 受話音声のみ |
 
 ---
 
-### 12.2 TCP再接続フロー
+### 12.2 制御チャンネル再接続フロー
 
 #### 再接続バックオフ戦略
 
@@ -973,10 +1059,10 @@ Phase 2（AXP2101初期化）完了後からLED制御が可能になる。
 
 #### 再接続時の状態リセット
 
-TCP切断を検知した時点で以下を実行する。
+制御チャンネルの通信途絶を検知した時点で以下を実行する。
 
 ```
-TCP切断検知
+制御チャンネル切断検知
   │
   ├─ 送話権を保持していた場合
   │    → 音声送信を即時停止（i2s_capture_task, opus_encode_task停止）
@@ -988,7 +1074,7 @@ TCP切断検知
   │    → EVT_FLOOR_BUSY をクリア
   │
   ├─ EVT_DISCONNECTED をセット（LED: 1Hz点滅）
-  └─ バックオフ付きで TCP 再接続ループ開始
+  └─ バックオフ付きで制御チャンネル再接続ループ開始
 
 再接続成功
   │
@@ -999,18 +1085,18 @@ TCP切断検知
   └─ EVT_CONNECTED をセット（LED: 常時点灯、待機状態へ）
 ```
 
-#### `tcp_task` 内の再接続ループ
+#### `ctrl_task` 内の再接続ループ
 
 ```c
 // 疑似コード
 while (true) {
-    if (tcp_connect(server_ip, TCP_PORT) == OK) {
+    if (ctrl_udp_open(server_ip, CTRL_PORT) == OK) {
         retry_count = 0;
         send_hello();
-        recv_hello_ack();
+        recv_hello_ack();         // 最大3回リトライ
         udp_send_keepalive();
         state_set(EVT_CONNECTED);
-        tcp_receive_loop();       // 切断までブロック
+        ctrl_recv_loop();         // 切断まで送受信をループ
     }
     // 切断 or 接続失敗
     state_clear(EVT_CONNECTED);
@@ -1042,12 +1128,12 @@ PTTボタン押下
             → EVT_DISCONNECTED をセット → 再接続フローへ
 ```
 
-#### ケース2: 送話権保持中にTCP切断
+#### ケース2: 送話権保持中に制御チャンネル切断
 
 ```
 送話中（EVT_FLOOR_GRANTED）
   │
-  └─ TCP切断検知
+  └─ 制御チャンネル切断検知
        │
        ├─ 音声送信を即時停止
        ├─ EVT_FLOOR_GRANTED をクリア
@@ -1078,7 +1164,7 @@ EVT_FLOOR_GRANTED セット時にタイマー開始（60秒）
 
 #### ケース4: UDPパケット途絶（受話中）
 
-TCP接続は維持されているがUDPが届かない場合。
+制御チャンネルは維持されているが音声UDPが届かない場合。
 
 ```
 received_rx_queue が枯渇
@@ -1086,7 +1172,7 @@ received_rx_queue が枯渇
   ├─ Opusのパケットロス隠蔽（PLC）で補間（最大3フレーム = 60ms）
   │
   └─ 60ms以上途絶 → 無音出力
-       （TCP接続は維持しているので再接続は不要）
+       （制御チャンネルは維持しているので再接続は不要）
        （PTT_NOTIFY_STOP が来るまで受話中状態を維持）
 ```
 
@@ -1094,16 +1180,16 @@ received_rx_queue が枯渇
 
 ### 12.4 LTE-M切断フロー
 
-LTE-Mレベルで切断した場合はTCP切断として上位に伝播する。
+LTE-Mレベルで切断した場合は制御チャンネル切断として上位に伝播する。
 
 ```
-AT+CEREG URCで切断通知 or TCP切断をトリガーに検知
+AT+CEREG URCで切断通知 or 制御チャンネル切断をトリガーに検知
   │
-  ├─ TCP再接続を試みる（バックオフ付き）
-  │    → モデムレベルの切断なら TCP 接続自体が失敗し続ける
+  ├─ 制御チャンネル再接続を試みる（バックオフ付き）
+  │    → モデムレベルの切断なら UDP open 自体が失敗し続ける
   │
-  └─ TCP接続が5回連続失敗
-       → tcp_task が modem_connect() を呼び出してLTE-M再接続を試みる
+  └─ 制御チャンネル接続が5回連続失敗
+       → ctrl_task が modem_connect() を呼び出してLTE-M再接続を試みる
             → AT+CGACT=0,1 → AT+CGACT=1,1（PDP再有効化）
             → 改善しなければモデムをリセット（PWRキー制御）
 ```
@@ -1206,7 +1292,7 @@ VPSサーバー上のGoプロセスがHTTPサーバーを内蔵し、デバッ�
 | 端末ID | MACアドレス下4バイト（16進数表示） |
 | グループID | 現在所属グループ（1〜8） |
 | 状態 | `待機中` / `送話中` / `受話中` |
-| 接続時刻 | TCP接続確立時刻 |
+| 接続時刻 | 制御チャンネル接続確立時刻 |
 | 最終受信 | 最後にHEARTBEATまたはパケットを受信した時刻 |
 
 #### `device_update` payload 例
@@ -1363,8 +1449,8 @@ Web Audio API（AudioContext）で再生
 │                      VPS (Debian / Go)                      │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  tcp_server  │  │  udp_server  │  │    ws_server     │  │
-│  │  port: 6000  │  │  port: 6001  │  │    port: 8080    │  │
+│  │  ctrl_server │  │  udp_server  │  │    ws_server     │  │
+│  │  UDP:6000    │  │  UDP:6001    │  │    port: 8080    │  │
 │  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
 │         │                 │                    │            │
 │  ┌──────▼─────────────────▼──────┐  ┌─────────▼─────────┐  │
@@ -1373,7 +1459,7 @@ Web Audio API（AudioContext）で再生
 │  │  protocol / audio relay       │  │  testtone         │  │
 │  └───────────────────────────────┘  └───────────────────┘  │
 └──────────┬───────────────┬──────────────────────────────────┘
-           │ TCP:6000      │ UDP:6001
+           │ UDP:6000      │ UDP:6001
       LTE-M│          LTE-M│
 ┌──────────▼───┐    ┌──────▼───────┐
 │  端末A        │    │  端末B        │
@@ -1400,8 +1486,8 @@ transceiver/
     ├── modem/               # SIM7080G モデム管理
     │   ├── modem.c/h        # 初期化・LTE-M接続・ソケット管理
     │   └── at_cmd.c/h       # ATコマンド送受信（UART2排他制御）
-    ├── network/             # TCP/UDP ソケット通信
-    │   ├── tcp_client.c/h   # 制御チャンネル（接続・送受信・再接続）
+    ├── network/             # UDP ソケット通信
+    │   ├── ctrl_client.c/h  # 制御チャンネル（接続・送受信・再接続）
     │   └── udp_client.c/h   # 音声チャンネル（送受信・キープアライブ）
     ├── protocol/            # 制御プロトコル
     │   ├── protocol.c/h     # メッセージのシリアライズ/デシリアライズ
@@ -1437,7 +1523,7 @@ main
 |----------------|------|---------|
 | `pmic` | AXP2101のI2C制御。電源レール有効化、LED制御 | `axp2101_init()`, `led_set()` |
 | `modem` | ATコマンド管理。LTE-M接続、ソケット開閉 | `modem_init()`, `modem_connect()` |
-| `network` | TCP/UDPの送受信。再接続ループ、キープアライブ | `tcp_send()`, `udp_send()`, `udp_recv()` |
+| `network` | UDP送受信（制御・音声）。再接続ループ、キープアライブ | `ctrl_send()`, `udp_send()`, `udp_recv()` |
 | `protocol` | バイト列 ↔ 構造体の変換。メッセージタイプ定義 | `proto_encode()`, `proto_decode()` |
 | `floor_ctrl` | 送話権の状態保持（GRANTED/DENIED/FREE） | `floor_request()`, `floor_release()` |
 | `audio` | I2S DMAバッファのキャプチャ・再生 | `i2s_capture_start()`, `i2s_play_frame()` |
@@ -1446,40 +1532,25 @@ main
 
 ---
 
-### 13.3 サーバー アーキテクチャ（Go）
+### 13.3 サーバー アーキテクチャ（Python）
 
 #### ディレクトリ構成
 
 ```
 server/
-├── main.go                  # エントリポイント。各サーバー起動
-├── config/
-│   └── config.go            # 設定読み込み（ポート・タイムアウト等）
-├── protocol/
-│   └── protocol.go          # 制御メッセージの定義・シリアライズ
-├── device/
-│   ├── device.go            # 端末状態管理（接続・切断・状態更新）
-│   └── group.go             # グループ管理（所属・一覧）
-├── floor/
-│   └── floor.go             # 送話権（Floor Control）管理
-├── server/
-│   ├── tcp_server.go        # TCP制御チャンネルサーバー（port 6000）
-│   ├── udp_server.go        # UDP音声中継サーバー（port 6001）
-│   └── ws_server.go         # WebSocketサーバー（port 8080）
-├── audio/
-│   ├── relay.go             # 音声UDPパケットのグループ内中継
-│   └── testtone.go          # テストトーン生成・Opusエンコード・送信
-├── monitor/
-│   ├── monitor.go           # モニターWebSocket接続管理・イベント配信
-│   └── logger.go            # イベントログ（メモリ保持・WebSocket配信）
-└── web/
-    └── static/
-        ├── index.html
-        ├── app.js
-        └── style.css
+├── main.py          # エントリポイント。各サーバー起動・タイムアウト監視
+├── config.py        # 設定読み込み（環境変数・デフォルト値）
+├── protocol.py      # 制御メッセージの定義・シリアライズ
+├── device.py        # 端末状態管理（登録・削除・アドレス更新）
+├── floor.py         # 送話権（Floor Control）管理
+├── ctrl_server.py   # UDP制御チャンネルサーバー（port 6000）
+├── audio_server.py  # UDP音声中継サーバー（port 6001）
+├── web_server.py    # WebSocketサーバー（port 8080）
+├── monitor.py       # WebSocketブロードキャスト管理・ログ管理
+└── requirements.txt # 依存ライブラリ（websockets）
 ```
 
-#### パッケージ依存関係
+#### モジュール依存関係
 
 ```
 main
@@ -1487,29 +1558,24 @@ main
  ├── protocol    （依存なし）
  ├── device      ← protocol
  ├── floor       ← device
- ├── audio       ← device, floor, protocol
- ├── monitor     ← device, logger
- └── server
-      ├── tcp_server  ← device, floor, protocol, monitor
-      ├── udp_server  ← device, floor, audio, monitor
-      └── ws_server   ← monitor
+ ├── monitor     ← device
+ ├── ctrl_server ← device, floor, protocol, monitor
+ ├── audio_server← device, floor, protocol, monitor
+ └── web_server  ← monitor
 ```
 
-#### 各パッケージの責務
+#### 各モジュールの責務
 
-| パッケージ | 責務 |
+| モジュール | 責務 |
 |------------|------|
-| `config` | 環境変数・設定ファイルの読み込み |
-| `protocol` | 制御メッセージ構造体・バイト列変換 |
-| `device` | 端末の登録・状態管理・UDP送信先アドレスの動的更新 |
+| `config` | 環境変数の読み込み。ポート・タイムアウト等の設定値管理 |
+| `protocol` | 制御メッセージ構造体・バイト列変換。UDPヘッダー定義 |
+| `device` | 端末の登録・状態管理・UDPアドレスの動的更新（NAPT対応） |
 | `floor` | グループごとの送話権管理。同時に1端末のみ保持 |
-| `audio/relay` | 受信UDPパケットを同一グループの他端末へ転送。送話権なし端末からは破棄 |
-| `audio/testtone` | 正弦波PCM生成→Opusエンコード→UDP送信（端末ID: 0xFFFFFFFF） |
 | `monitor` | WebSocket接続管理。デバイス状態・ログ・音声データをブラウザへ配信 |
-| `logger` | イベントログをメモリ保持（最大1000件）・WebSocketへプッシュ |
-| `server/tcp_server` | TCP接続受付・HELLO/PTT/HEARTBEAT等の処理ループ |
-| `server/udp_server` | UDP受信ループ・送信元アドレスの更新・audio/relayへ委譲 |
-| `server/ws_server` | HTTP静的ファイル配信・WebSocketアップグレード |
+| `ctrl_server` | UDP制御チャンネル受信・HELLO/PTT/HEARTBEAT等のメッセージ処理 |
+| `audio_server` | UDP音声パケット受信・同一グループ内端末への中継・モニターへの配信 |
+| `web_server` | WebSocketサーバー（`/ws`エンドポイント）。モニターUI用 |
 
 ---
 
@@ -1521,17 +1587,17 @@ main
 [端末A]                    [VPSサーバー]              [端末B]
   │                              │                       │
   │ PTT押下                      │                       │
-  │─── TCP: PTT_START ──────────►│                       │
-  │◄── TCP: PTT_START_ACK ───────│                       │
-  │                              │─ TCP: PTT_NOTIFY ────►│
+  │─── UDP: PTT_START ──────────►│                       │
+  │◄── UDP: PTT_START_ACK ───────│                       │
+  │                              │─ UDP: PTT_NOTIFY ────►│
   │                              │                       │
   │─── UDP: Opusフレーム ────────►│                       │
   │─── UDP: Opusフレーム ────────►│──UDP: Opusフレーム ──►│
   │         （繰り返し）           │      （中継）          │
   │                              │                       │
   │ PTTボタン解放                 │                       │
-  │─── TCP: PTT_STOP ───────────►│                       │
-  │                              │─ TCP: PTT_NOTIFY_STOP►│
+  │─── UDP: PTT_STOP ───────────►│                       │
+  │                              │─ UDP: PTT_NOTIFY_STOP►│
 ```
 
 #### モニターへの音声転送フロー
@@ -1551,13 +1617,13 @@ main
 [端末]                        [サーバー]
   │                               │
   │  （NAPTタイムアウト発生）       │
-  │  TCP切断検知                   │
+  │  制御チャンネル切断検知          │
   │                               │  HEARTBEATタイムアウト（75秒）
   │                               │  → 端末をdisconnected状態に
   │                               │  → ログ出力
-  │  TCP再接続                     │
-  │─── TCP: HELLO ───────────────►│
-  │◄── TCP: HELLO_ACK ────────────│
+  │  UDP ctrl 再接続               │
+  │─── UDP: HELLO ───────────────►│
+  │◄── UDP: HELLO_ACK ────────────│
   │  UDPキープアライブ送信          │
   │─── UDP: keepalive ───────────►│  送信元IP:Port を更新
   │  通常動作再開                   │
@@ -1573,14 +1639,14 @@ main
 |--------|----|------|----|
 | `CONFIG_GROUP_ID` | uint8 | 所属グループID | 1 |
 | `CONFIG_SERVER_IP` | string | VPSサーバーIPアドレス | — |
-| `CONFIG_TCP_PORT` | uint16 | TCP制御ポート | 6000 |
+| `CONFIG_CTRL_PORT` | uint16 | UDP制御ポート | 6000 |
 | `CONFIG_UDP_PORT` | uint16 | UDP音声ポート | 6001 |
 
 #### サーバー側（環境変数）
 
 | 変数名 | 内容 | デフォルト |
 |--------|------|-----------|
-| `TCP_PORT` | TCP制御チャンネルポート | 6000 |
+| `CTRL_PORT` | UDP制御チャンネルポート | 6000 |
 | `UDP_PORT` | UDP音声チャンネルポート | 6001 |
 | `WS_PORT` | WebSocketポート | 8080 |
 | `HEARTBEAT_TIMEOUT` | 端末タイムアウト秒数 | 75 |
@@ -1613,11 +1679,11 @@ main
 
 ### B. 未決定事項（TBD）
 
-- [x] TCPポート番号（6000）、UDPポート番号（6001）
+- [x] 制御チャンネルUDPポート番号（6000）、音声チャンネルUDPポート番号（6001）
 - [x] サンプリングレート（8kHz）
 - [x] Opusビットレート（8kbps）
 - [x] 端末IDの採番方式（ESP32-S3 Wi-Fi MACアドレス下4バイト）
 - [x] マイク・スピーカーの接続方式（Icomインカム、2.5mm/3.5mmジャック、配線極性は要実機確認）
-- [x] サーバー実装言語・OS（Go / Debian）
+- [x] サーバー実装言語・OS（Python 3.11 / Debian）
 - [x] HEARTBEATの送信間隔（25秒）・タイムアウト閾値（75秒、3回欠損で切断）
 - [x] グループ切替操作（現フェーズはconfig.h固定値、将来フェーズでボタン追加）
