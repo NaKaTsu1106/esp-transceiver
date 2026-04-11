@@ -3,6 +3,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "protocol.h"
+#include "config.h"
 
 // イベントビット定義
 #define EVT_MODEM_READY     (1 << 0)
@@ -27,9 +28,9 @@ extern QueueHandle_t g_ctrl_rx_queue;
 extern QueueHandle_t g_pcm_encode_queue;
 extern QueueHandle_t g_encoded_tx_queue;
 
-// PCMフレーム（20ms @ 8kHz = 160サンプル）
+// PCMフレーム（20ms @ 16kHz = 320サンプル）
 typedef struct {
-    int16_t samples[160];
+    int16_t samples[CONFIG_OPUS_FRAME_SAMPLES];
 } pcm_frame_t;
 
 // エンコード済みフレーム

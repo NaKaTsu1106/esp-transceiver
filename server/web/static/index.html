@@ -330,12 +330,20 @@ let nextPlayTime = 0;
 let audioGroup = 1;
 let frameCount = 0;
 
+// Chrome の WebCodecs Opus デコーダは sampleRate に 8000 を指定しても
+// 内部処理が 48000 Hz で行われ、出力サンプル数が 960（48kHz×20ms）になる。
+// これを 8kHz として createBuffer すると音程が 6 倍低くなり間隔も広がる。
+// 解決策: デコーダを 48000 Hz に設定し、audioData.sampleRate で動的に
+// バッファレートと再生タイミングを決定する。
+const OPUS_DECODE_RATE = 48000;
+
 function startMonitor() {
   audioGroup = parseInt(document.getElementById('audio-group').value);
 
-  // AudioContext 初期化（ユーザー操作が必要）
+  // AudioContext はハードウェアのデフォルトレートで生成する。
+  // 8000 Hz を強制すると Chrome が無視して内部レートと乖離するため指定しない。
   if (!audioCtx) {
-    audioCtx = new AudioContext({ sampleRate: 8000 });
+    audioCtx = new AudioContext();
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
   nextPlayTime = audioCtx.currentTime + 0.1;
@@ -349,12 +357,15 @@ function startMonitor() {
 
   audioDecoder = new AudioDecoder({
     output: (audioData) => {
-      const n = audioData.numberOfFrames;
-      const pcm = new Float32Array(n);
+      const n    = audioData.numberOfFrames;
+      // audioData.sampleRate が実際の出力レート（48000 など）を保持する
+      const rate = audioData.sampleRate || OPUS_DECODE_RATE;
+      const pcm  = new Float32Array(n);
       audioData.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
       audioData.close();
 
-      const buf = audioCtx.createBuffer(1, n, 8000);
+      // バッファは実際の出力レートで作成する（8000 固定にしない）
+      const buf = audioCtx.createBuffer(1, n, rate);
       buf.copyToChannel(pcm, 0);
 
       const src = audioCtx.createBufferSource();
@@ -363,7 +374,8 @@ function startMonitor() {
       const now = audioCtx.currentTime;
       if (nextPlayTime < now) nextPlayTime = now + 0.05;
       src.start(nextPlayTime);
-      nextPlayTime += n / 8000;
+      // 再生スケジュールもデコーダの実際のレートで計算する
+      nextPlayTime += n / rate;
 
       // VUメーター
       let peak = 0;
@@ -373,7 +385,8 @@ function startMonitor() {
     error: (e) => setAudioStatus('デコードエラー: ' + e.message, false)
   });
 
-  audioDecoder.configure({ codec: 'opus', sampleRate: 8000, numberOfChannels: 1 });
+  // 48000 Hz を明示することで Chrome が内部処理レートと一致した出力を返す
+  audioDecoder.configure({ codec: 'opus', sampleRate: OPUS_DECODE_RATE, numberOfChannels: 1 });
 
   // WebSocket 経由で音声サブスクライブ
   audioSubscribed = true;

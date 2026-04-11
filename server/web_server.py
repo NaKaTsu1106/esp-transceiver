@@ -28,7 +28,7 @@ async def ws_handler(websocket) -> None:
 
         # 3. 音声デコーダ初期化情報
         await websocket.send(json.dumps(
-            {"type": "audio_init", "sample_rate": 8000, "channels": 1}))
+            {"type": "audio_init", "sample_rate": 16000, "channels": 1}))
 
         # ---- クライアントメッセージ受信ループ ----
         async for msg in websocket:

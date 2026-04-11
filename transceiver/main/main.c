@@ -50,20 +50,48 @@ void app_main(void)
     // Phase 7: FreeRTOS タスク起動
     ESP_LOGI(TAG, "[Phase 7] Starting tasks");
 
-    // Core 0: 通信系
-    xTaskCreatePinnedToCore(ctrl_task,      "ctrl",      8192, NULL, 8,  NULL, 0);
-    xTaskCreatePinnedToCore(udp_rx_task,    "udp_rx",    4096, NULL, 10, NULL, 0);
-    xTaskCreatePinnedToCore(udp_tx_task,    "udp_tx",    4096, NULL, 10, NULL, 0);
-    xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 2048, NULL, 5,  NULL, 0);
+    /*
+     * コアアサイン方針（doc/ref/main (1).c に準拠）:
+     *
+     * Core 0 — AT通信 + I2Sハードウェア
+     *   I2S DMA 割込みを Core 0 に集約し、Core 1 の Opus 処理と競合させない。
+     *   udp_tx (15) > ctrl (5) の優先度差により、音声送信が制御ポーリングを
+     *   プリエンプトし、さらに FreeRTOS ミューテックスの priority inheritance で
+     *   ctrl がミューテックスを保持中でも udp_tx が速やかに取得できる。
+     *
+     * Core 1 — 音声処理パイプライン
+     *   CPU集約の Opus encode/decode を最高優先で実行。
+     *   udp_rx を同コアに置き、受信パイプライン全体（受信→デコード→再生キュー）
+     *   のスレッド間受け渡し遅延を最小化する。
+     *
+     *   Task              Core  Pri  役割
+     *   i2s_capture        0    19   INMP441 → pcm_encode_queue
+     *   i2s_playback       0    19   pcm_playback_queue → PCM5102
+     *   udp_tx             0    15   encoded_tx_queue → AT+CASEND (音声送信)
+     *   ctrl               0     5   AT+CARECV/CASEND (制御チャンネル)
+     *   heartbeat          0     3   キープアライブ
+     *   opus_encode        1    20   PCM → Opus (CPU集約)
+     *   opus_decode        1    20   Opus → PCM (CPU集約)
+     *   udp_rx             1    18   AT+CARECV → ジッタバッファ (デコードと同コア)
+     *   ptt                1     6   GPIO ポーリング
+     *   state_machine      1     4   イベント処理
+     *   led                1     3   LED 点滅制御
+     */
 
-    // Core 1: 音声系（Opusは内部バッファが大きいため32KBが必要）
-    xTaskCreatePinnedToCore(opus_encode_task,  "opus_enc",  32768, NULL, 12, NULL, 1);
-    xTaskCreatePinnedToCore(opus_decode_task,  "opus_dec",  32768, NULL, 12, NULL, 1);
-    xTaskCreatePinnedToCore(i2s_capture_task,  "i2s_cap",    4096, NULL, 15, NULL, 1);
-    xTaskCreatePinnedToCore(i2s_playback_task, "i2s_play",   4096, NULL, 15, NULL, 1);
-    xTaskCreatePinnedToCore(ptt_task,          "ptt",       2048, NULL, 6,  NULL, 1);
-    xTaskCreatePinnedToCore(led_task,          "led",       2048, NULL, 3,  NULL, 1);
-    xTaskCreatePinnedToCore(state_machine_task,"state",     4096, NULL, 4,  NULL, 1);
+    // Core 0: AT通信 + I2Sハードウェア
+    xTaskCreatePinnedToCore(i2s_capture_task,  "i2s_cap",   4096,  NULL, 19, NULL, 0);
+    xTaskCreatePinnedToCore(i2s_playback_task, "i2s_play",  4096,  NULL, 19, NULL, 0);
+    xTaskCreatePinnedToCore(udp_tx_task,       "udp_tx",    4096,  NULL, 15, NULL, 0);
+    xTaskCreatePinnedToCore(ctrl_task,         "ctrl",      8192,  NULL,  5, NULL, 0);
+    xTaskCreatePinnedToCore(heartbeat_task,    "heartbeat", 2048,  NULL,  3, NULL, 0);
+
+    // Core 1: 音声処理パイプライン（Opusは内部バッファが大きいため32KBが必要）
+    xTaskCreatePinnedToCore(opus_encode_task,  "opus_enc",  32768, NULL, 20, NULL, 1);
+    xTaskCreatePinnedToCore(opus_decode_task,  "opus_dec",  32768, NULL, 20, NULL, 1);
+    xTaskCreatePinnedToCore(udp_rx_task,       "udp_rx",    4096,  NULL, 18, NULL, 1);
+    xTaskCreatePinnedToCore(ptt_task,          "ptt",       2048,  NULL,  6, NULL, 1);
+    xTaskCreatePinnedToCore(state_machine_task,"state",     4096,  NULL,  4, NULL, 1);
+    xTaskCreatePinnedToCore(led_task,          "led",       2048,  NULL,  3, NULL, 1);
 
     ESP_LOGI(TAG, "All tasks started.");
 }

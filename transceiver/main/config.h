@@ -41,11 +41,11 @@
 // =============================================================================
 // 音声設定
 // =============================================================================
-#define CONFIG_AUDIO_SAMPLE_RATE    8000    // 8kHz
+#define CONFIG_AUDIO_SAMPLE_RATE    16000   // 16kHz
 #define CONFIG_AUDIO_CHANNELS       1       // モノラル
-#define CONFIG_OPUS_BITRATE         8000    // 8kbps
+#define CONFIG_OPUS_BITRATE         16000   // 16kbps
 #define CONFIG_OPUS_FRAME_MS        20      // 20ms
-#define CONFIG_OPUS_FRAME_SAMPLES   (CONFIG_AUDIO_SAMPLE_RATE * CONFIG_OPUS_FRAME_MS / 1000) // 160
+#define CONFIG_OPUS_FRAME_SAMPLES   (CONFIG_AUDIO_SAMPLE_RATE * CONFIG_OPUS_FRAME_MS / 1000) // 320
 
 // =============================================================================
 // 入力設定

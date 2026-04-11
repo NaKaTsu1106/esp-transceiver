@@ -2,6 +2,7 @@
 #include "state_machine.h"
 #include "config.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "opus.h"
@@ -24,8 +25,10 @@ esp_err_t opus_codec_init(void)
         return ESP_FAIL;
     }
     opus_encoder_ctl(s_encoder, OPUS_SET_BITRATE(CONFIG_OPUS_BITRATE));
-    opus_encoder_ctl(s_encoder, OPUS_SET_COMPLEXITY(3));    // ESP32省電力設定
+    opus_encoder_ctl(s_encoder, OPUS_SET_COMPLEXITY(5));
     opus_encoder_ctl(s_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(s_encoder, OPUS_SET_INBAND_FEC(1));
+    opus_encoder_ctl(s_encoder, OPUS_SET_PACKET_LOSS_PERC(10));
 
     // デコーダ初期化（Step 7で使用）
     s_decoder = opus_decoder_create(CONFIG_AUDIO_SAMPLE_RATE, CONFIG_AUDIO_CHANNELS, &err);
@@ -34,7 +37,7 @@ esp_err_t opus_codec_init(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "opus_codec_init: OK (8kHz mono 8kbps complexity=3)");
+    ESP_LOGI(TAG, "opus_codec_init: OK (16kHz mono 16kbps complexity=5 FEC)");
     return ESP_OK;
 }
 
@@ -66,20 +69,30 @@ void opus_encode_task(void *arg)
             continue;
         }
 
+        int64_t t0 = esp_timer_get_time();
         int encoded_len = opus_codec_encode(pcm_frame.samples, CONFIG_OPUS_FRAME_SAMPLES,
                                              enc_frame.data, sizeof(enc_frame.data));
+        int64_t encode_us = esp_timer_get_time() - t0;
+
         if (encoded_len < 0) {
             ESP_LOGW(TAG, "opus_encode failed: %s", opus_strerror(encoded_len));
             continue;
         }
 
         enc_frame.len          = encoded_len;
-        enc_frame.seq          = seq++;
+        enc_frame.seq          = seq;
         enc_frame.timestamp_ms = (uint16_t)(timestamp_ms & 0xFFFF);
         timestamp_ms          += CONFIG_OPUS_FRAME_MS;
 
+        // 50フレーム（約1秒）ごとにログ出力
+        if (seq % 50 == 0) {
+            ESP_LOGI(TAG, "encode: seq=%u len=%dB time=%lldus (budget=20000us)",
+                     seq, encoded_len, encode_us);
+        }
+        seq++;
+
         if (xQueueSend(g_encoded_tx_queue, &enc_frame, 0) != pdTRUE) {
-            ESP_LOGD(TAG, "encoded_tx_queue full, dropping frame");
+            ESP_LOGW(TAG, "encoded_tx_queue full, dropping frame seq=%u", enc_frame.seq);
         }
     }
 }

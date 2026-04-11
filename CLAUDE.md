@@ -7,18 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 LilyGO T-SIM7080G-S3（ESP32-S3）を使ったIPトランシーバー。LTE-M経由でVPS中継サーバーを介し、複数端末間でPTT（Push-to-Talk）音声通信を行う。
 
 - **デバイス側**: C（ESP-IDF v6.0）→ `transceiver/`
-- **サーバー側**: Go → `server/`
+- **サーバー側**: Python → `server/`
 - **仕様書**: `doc/specification.md`
 - **実装進捗**: `doc/progress.md`
 
 ## Build Commands
 
-### サーバー（Go）
+### サーバー（Python）
 
 ```bash
 cd server
-go build ./...
-go run main.go
+pip install -r requirements.txt
+python main.py
 ```
 
 ## Architecture
@@ -50,16 +50,18 @@ udp_rx_task → received_rx_queue（ジッタバッファ） → opus_decode_tas
 
 **モデム通信の原則**: ATコマンドは `modem_task` が排他管理。他タスクがUARTに直接アクセスしてはならない。
 
-### サーバー側パッケージ構成
+### サーバー側モジュール構成
 
 ```
-protocol/  TCPメッセージ・UDPヘッダー定義（デバイス側 protocol.h と対応）
-device/    端末管理（セッションID・UDPアドレスの動的更新）
-floor/     グループ単位の送話権（Floor Control）管理
-server/    TCP・UDP・WebSocketサーバー
-audio/     音声UDPパケット中継・テストトーン生成
-monitor/   デバッグモニター・ロガー
-config/    設定ロード
+main.py          エントリポイント。各サーバー起動・タイムアウト監視
+config.py        設定読み込み（環境変数・デフォルト値）
+protocol.py      制御メッセージの定義・シリアライズ（デバイス側 protocol.h と対応）
+device.py        端末管理（セッションID・UDPアドレスの動的更新）
+floor.py         グループ単位の送話権（Floor Control）管理
+ctrl_server.py   UDP制御チャンネルサーバー（port 6000）
+audio_server.py  UDP音声中継サーバー（port 6001）
+web_server.py    WebSocketサーバー（port 8080）
+monitor.py       WebSocketブロードキャスト管理・ログ管理
 ```
 
 ### プロトコル

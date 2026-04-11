@@ -52,51 +52,55 @@ void udp_tx_task(void *arg)
 {
     ESP_LOGI(TAG, "udp_tx_task: started");
 
-    // EVT_CONNECTED が立つまで待機
-    xEventGroupWaitBits(g_system_events, EVT_CONNECTED,
-                        pdFALSE, pdTRUE, portMAX_DELAY);
-
-    // UDP ソケットオープン
-    esp_err_t ret = modem_udp_open(CONFIG_SERVER_IP, CONFIG_UDP_PORT);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "udp_tx_task: UDP open failed, task exit");
-        vTaskDelete(NULL);
-        return;
-    }
-    ESP_LOGI(TAG, "udp_tx_task: UDP open OK");
-
-    TickType_t last_keepalive = xTaskGetTickCount();
-    encoded_frame_t frame;
-
     while (1) {
-        // 切断されたら再接続待ち
-        if (!(xEventGroupGetBits(g_system_events) & EVT_CONNECTED)) {
-            modem_udp_close();
-            xEventGroupWaitBits(g_system_events, EVT_CONNECTED,
-                                pdFALSE, pdTRUE, portMAX_DELAY);
-            ret = modem_udp_open(CONFIG_SERVER_IP, CONFIG_UDP_PORT);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "udp_tx_task: UDP reopen failed");
-                continue;
+        // EVT_CONNECTED が立つまで待機
+        xEventGroupWaitBits(g_system_events, EVT_CONNECTED,
+                            pdFALSE, pdTRUE, portMAX_DELAY);
+
+        // UDP 音声チャンネルを開く
+        ESP_LOGI(TAG, "udp_tx_task: opening UDP audio %s:%d",
+                 CONFIG_SERVER_IP, CONFIG_UDP_PORT);
+        if (modem_udp_open(CONFIG_SERVER_IP, CONFIG_UDP_PORT) != ESP_OK) {
+            ESP_LOGE(TAG, "udp_tx_task: UDP open failed, retry in 2s");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        ESP_LOGI(TAG, "udp_tx_task: UDP audio channel open");
+
+        encoded_frame_t frame;
+        TickType_t last_ka    = xTaskGetTickCount();
+        uint32_t total_frames = 0;
+
+        while (xEventGroupGetBits(g_system_events) & EVT_CONNECTED) {
+            // エンコード済みフレームを最大 20ms 待つ
+            if (xQueueReceive(g_encoded_tx_queue, &frame, pdMS_TO_TICKS(20)) == pdTRUE) {
+                esp_err_t ret = udp_send_audio(g_session_id, CONFIG_GROUP_ID,
+                                               frame.seq, frame.timestamp_ms,
+                                               frame.data, frame.len);
+                if (ret == ESP_OK) {
+                    total_frames++;
+                    last_ka = xTaskGetTickCount();
+                    // 50フレーム（約1秒）ごとに統計ログ
+                    if (total_frames % 50 == 0) {
+                        ESP_LOGI(TAG, "audio TX: %u frames seq=%u len=%dB",
+                                 total_frames, frame.seq, frame.len);
+                    }
+                } else {
+                    ESP_LOGW(TAG, "udp_send_audio failed seq=%u", frame.seq);
+                }
             }
-            last_keepalive = xTaskGetTickCount();
-            ESP_LOGI(TAG, "udp_tx_task: UDP reopened");
+
+            // 25秒ごとにキープアライブ送信
+            if (xTaskGetTickCount() - last_ka >
+                    pdMS_TO_TICKS(CONFIG_UDP_KEEPALIVE_INTERVAL_MS)) {
+                udp_send_keepalive(g_session_id, CONFIG_GROUP_ID);
+                last_ka = xTaskGetTickCount();
+                ESP_LOGD(TAG, "udp_tx_task: keepalive sent");
+            }
         }
 
-        // エンコード済みフレームを最大20ms待つ
-        if (xQueueReceive(g_encoded_tx_queue, &frame, pdMS_TO_TICKS(20)) == pdTRUE) {
-            uint8_t sid    = g_session_id;
-            uint8_t grp    = (uint8_t)CONFIG_GROUP_ID;
-            udp_send_audio(sid, grp, frame.seq, frame.timestamp_ms,
-                           frame.data, (size_t)frame.len);
-            last_keepalive = xTaskGetTickCount(); // 音声送信でキープアライブ更新
-        }
-
-        // キープアライブ（25秒間隔）
-        if ((xTaskGetTickCount() - last_keepalive) >= pdMS_TO_TICKS(CONFIG_UDP_KEEPALIVE_INTERVAL_MS)) {
-            udp_send_keepalive(g_session_id, (uint8_t)CONFIG_GROUP_ID);
-            last_keepalive = xTaskGetTickCount();
-            ESP_LOGD(TAG, "UDP keepalive sent");
-        }
+        modem_udp_close();
+        total_frames = 0;
+        ESP_LOGI(TAG, "udp_tx_task: disconnected, UDP closed");
     }
 }

@@ -1200,13 +1200,13 @@ AT+CEREG URCで切断通知 or 制御チャンネル切断をトリガーに検�
 
 ### 12.1 概要
 
-VPSサーバー上のGoプロセスがHTTPサーバーを内蔵し、デバッグ用のWebアプリを提供する。  
+VPSサーバー上のPythonプロセスがHTTPサーバーを内蔵し、デバッグ用のWebアプリを提供する。  
 フロントエンドはHTML + JavaScriptのみ（フレームワークなし）。リアルタイム更新はWebSocketで行う。
 
 ```
 ブラウザ（HTML+JS）
-  ├─ WebSocket ──► Go server :8080/ws   （リアルタイム: デバイス状態・ログ・音声）
-  └─ REST API  ──► Go server :8080/api  （操作: テストトーン等）
+  ├─ WebSocket ──► Python server :8080/ws   （リアルタイム: デバイス状態・ログ・音声）
+  └─ REST API  ──► Python server :8080/api  （操作: テストトーン等）
 ```
 
 ポート8080はデバッグ用。本番運用時はファイアウォールで制限する。
@@ -1446,7 +1446,7 @@ Web Audio API（AudioContext）で再生
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      VPS (Debian / Go)                      │
+│                    VPS (Debian / Python)                    │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │  ctrl_server │  │  udp_server  │  │    ws_server     │  │
