@@ -38,7 +38,8 @@
 #define CONFIG_I2S_TX_WS_PIN        17  // Word Select (L/R Clock)
 #define CONFIG_I2S_TX_DOUT_PIN      16  // データ出力
 
-// RX: INMP441 マイク入力（I2S_NUM_1）
+// RX: PCM1808 ADC マイク入力（I2S_NUM_1）
+#define CONFIG_I2S_RX_MCLK_PIN      12  // Master Clock（実機に合わせて変更）
 #define CONFIG_I2S_RX_BCK_PIN       11  // Bit Clock
 #define CONFIG_I2S_RX_WS_PIN        10  // Word Select (L/R Clock)
 #define CONFIG_I2S_RX_DIN_PIN        9  // データ入力
@@ -55,8 +56,11 @@
 // =============================================================================
 // 入力設定
 // =============================================================================
-#define CONFIG_PTT_GPIO         0   // PTTボタン入力（Icomインカム Ring端子, LOW=押下, 実機に合わせて変更）
-#define CONFIG_PTT_DEBOUNCE_MS  20  // チャタリング除去 (ms)
+// PTT: GPIO13 アナログ入力（ADC2 CH2）
+// 電圧が CONFIG_PTT_THRESHOLD_MV を CONFIG_PTT_HOLD_MS 以上継続して下回ると送信開始
+#define CONFIG_PTT_GPIO         13    // ADC ピン番号（参照用）
+#define CONFIG_PTT_THRESHOLD_MV 2500  // 押下判定閾値 (mV)
+#define CONFIG_PTT_HOLD_MS      100   // 押下継続判定時間 (ms)
 
 // =============================================================================
 // ネットワーク設定

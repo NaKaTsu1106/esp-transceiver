@@ -14,14 +14,14 @@
 #define TEST_TONE_FREQ_HZ   1000
 #define TEST_TONE_AMPLITUDE 16000  // int16_t の約半分。ゲインなしで直接キューに積む
 
+// マイクループバックテスト用: 1 に設定するとマイク音声をそのままスピーカーに出力する
+// ネットワーク・Opus を完全にバイパスし、PCM1808 → PCM5102 の直結経路を確認できる。
+// テスト完了後は 0 に戻すこと
+#define TEST_MIC_LOOPBACK  0
+
 static const char *TAG = "i2s_capture";
 
-// INMP441 は感度 -26 dBFS と低いため、Opus エンコーダへの入力レベルを最大化する。
-// ただし MIC_GAIN_X を上げすぎると LTE-M 電波干渉ノイズも同倍率で増幅される。
-// SIM7080G と INMP441 が近接する T-SIM7080G-S3 では LTE 送信時に
-// RF がマイク電源・信号線に結合し可聴域ノイズを生じやすい。
-#define MIC_GAIN_X  8
-
+#define MIC_GAIN_X 4
 
 static inline int16_t gain_clamp(int16_t s, int gain)
 {
@@ -59,17 +59,18 @@ esp_err_t i2s_capture_init(void)
         ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
     }
 
-    // RX: INMP441 マイク入力（I2S_NUM_1、RX専用チャンネル）
+    // RX: PCM1808 ADC マイク入力（I2S_NUM_1、RX専用チャンネル）
+    // PCM1808 は MCLK が必須（256fs = 4.096MHz @ 16kHz）
     {
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
         ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
 
         i2s_std_config_t rx_cfg = {
-            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),
+            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),  // mclk_multiple=256
             .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                              I2S_SLOT_MODE_STEREO),
             .gpio_cfg = {
-                .mclk = I2S_GPIO_UNUSED,
+                .mclk = CONFIG_I2S_RX_MCLK_PIN,
                 .bclk = CONFIG_I2S_RX_BCK_PIN,
                 .ws   = CONFIG_I2S_RX_WS_PIN,
                 .dout = I2S_GPIO_UNUSED,
@@ -80,9 +81,9 @@ esp_err_t i2s_capture_init(void)
         ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
     }
 
-    ESP_LOGI(TAG, "i2s_capture_init: OK TX(I2S0 BCK=%d WS=%d DOUT=%d) RX(I2S1 BCK=%d WS=%d DIN=%d)",
+    ESP_LOGI(TAG, "i2s_capture_init: OK TX(I2S0 BCK=%d WS=%d DOUT=%d) RX(I2S1 MCLK=%d BCK=%d WS=%d DIN=%d)",
              CONFIG_I2S_TX_BCK_PIN, CONFIG_I2S_TX_WS_PIN, CONFIG_I2S_TX_DOUT_PIN,
-             CONFIG_I2S_RX_BCK_PIN, CONFIG_I2S_RX_WS_PIN, CONFIG_I2S_RX_DIN_PIN);
+             CONFIG_I2S_RX_MCLK_PIN, CONFIG_I2S_RX_BCK_PIN, CONFIG_I2S_RX_WS_PIN, CONFIG_I2S_RX_DIN_PIN);
     return ESP_OK;
 }
 
@@ -98,7 +99,7 @@ esp_err_t i2s_capture_read(int16_t *buf, size_t samples, size_t *bytes_read)
     if (ret != ESP_OK) return ret;
 
     size_t pairs = bytes_got / (2 * sizeof(int32_t));
-    // L チャンネルのみ抽出: INMP441 は 24bit 左詰め → >> 16 で int16 → ゲイン適用
+    // L チャンネルのみ抽出: PCM1808 は 24bit I2S → 32bit スロットに左詰め → >> 16 で int16 → ゲイン適用
     for (size_t i = 0; i < pairs; i++) {
         buf[i] = gain_clamp((int16_t)(raw[i * 2] >> 16), MIC_GAIN_X);
     }
@@ -108,7 +109,33 @@ esp_err_t i2s_capture_read(int16_t *buf, size_t samples, size_t *bytes_read)
 
 void i2s_capture_task(void *arg)
 {
-#if TEST_TONE_ENABLE
+#if TEST_MIC_LOOPBACK
+    ESP_LOGW(TAG, "i2s_capture_task: MIC LOOPBACK MODE (PCM1808 -> PCM5102, gain=%d)", MIC_GAIN_X);
+
+    static int32_t lb_rx[CONFIG_OPUS_FRAME_SAMPLES * 2];
+    static int32_t lb_tx[CONFIG_OPUS_FRAME_SAMPLES * 2];
+    i2s_chan_handle_t tx = i2s_get_tx_chan();
+    size_t bytes_got = 0, bytes_written = 0;
+
+    while (1) {
+        esp_err_t ret = i2s_channel_read(s_rx_chan, lb_rx,
+                                         sizeof(lb_rx), &bytes_got, portMAX_DELAY);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "loopback read failed: %s", esp_err_to_name(ret));
+            continue;
+        }
+        size_t pairs = bytes_got / (2 * sizeof(int32_t));
+        for (size_t i = 0; i < pairs; i++) {
+            // PCM1808: 24bit 左詰め → >> 16 で int16 → ゲイン → PCM5102 用に << 16
+            int16_t s = gain_clamp((int16_t)(lb_rx[i * 2] >> 16), MIC_GAIN_X);
+            lb_tx[i * 2]     = (int32_t)s << 16;  // L
+            lb_tx[i * 2 + 1] = (int32_t)s << 16;  // R
+        }
+        i2s_channel_write(tx, lb_tx, pairs * 2 * sizeof(int32_t),
+                          &bytes_written, portMAX_DELAY);
+    }
+
+#elif TEST_TONE_ENABLE
     ESP_LOGW(TAG, "i2s_capture_task: TEST TONE MODE (%dHz amp=%d)",
              TEST_TONE_FREQ_HZ, TEST_TONE_AMPLITUDE);
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -31,6 +32,16 @@ extern QueueHandle_t g_encoded_tx_queue;
 // 音声パイプラインキュー（受信）
 // g_pcm_playback_queue: opus_decode_task → i2s_playback_task (pcm_frame_t)
 extern QueueHandle_t g_pcm_playback_queue;
+
+// ビープリクエストキュー: state_machine → i2s_playback_task
+// i2s_playback_task 内で正弦波を生成・ミックスすることで
+// g_pcm_playback_queue の輻輳に依存せず確実に再生する。
+typedef struct {
+    int  freq_hz;
+    int  duration_ms;
+    bool deferred;  // true: g_pcm_playback_queue が空になるまで待ってから再生
+} beep_request_t;
+extern QueueHandle_t g_beep_queue;
 
 // PCMフレーム（20ms @ 16kHz = 320サンプル）
 typedef struct {

@@ -2,8 +2,11 @@
 websockets ライブラリを使った WebSocket サーバー（127.0.0.1:8080）。
 静的ファイル配信は nginx が担当するため、このサーバーは /ws のみ提供する。
 """
+import asyncio
 import json
 import logging
+import os
+import sys
 import time
 
 import websockets
@@ -49,6 +52,10 @@ async def ws_handler(websocket) -> None:
                     loopback.set_enabled(enabled)
                     await websocket.send(json.dumps(
                         {"type": "loopback_state", "enabled": enabled}))
+                elif action == "restart":
+                    await monitor._broadcast({"type": "restarting"})
+                    asyncio.get_event_loop().call_later(
+                        1.0, lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
 
             except Exception:
                 pass

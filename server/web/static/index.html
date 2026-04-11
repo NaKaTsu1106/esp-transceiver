@@ -19,6 +19,10 @@
   #server-input:focus { outline: none; border-color: #58a6ff; }
   #server-connect-btn { background: #1f6feb; border: none; color: #fff; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 600; white-space: nowrap; }
   #server-connect-btn:hover { background: #388bfd; }
+  #restart-btn { background: #6e2a2a; border: 1px solid #f8514966; color: #f85149; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  #restart-btn:hover { background: #b62324; color: #fff; }
+  #restart-btn:disabled { opacity: 0.4; cursor: default; }
+  #restart-toast { display: none; position: fixed; top: 16px; left: 50%; transform: translateX(-50%); background: #d29922; color: #fff; border-radius: 6px; padding: 8px 20px; font-size: 13px; font-weight: 600; z-index: 9999; }
 
   main { display: flex; flex-direction: column; flex: 1; overflow: hidden; padding: 16px; gap: 16px; }
 
@@ -100,8 +104,10 @@
            autocomplete="off" spellcheck="false"
            onkeydown="if(event.key==='Enter') connectToServer()">
     <button id="server-connect-btn" onclick="connectToServer()">接続</button>
+    <button id="restart-btn" onclick="restartServer()">再起動</button>
   </div>
 </header>
+<div id="restart-toast">サーバーを再起動しています...</div>
 
 <main>
   <!-- 接続端末一覧 -->
@@ -230,6 +236,7 @@ function connect(host) {
       else if (msg.type === 'audio_init')     return;
       else if (msg.type === 'audio')          handleAudioFrame(msg);
       else if (msg.type === 'loopback_state') applyLoopbackState(msg.enabled);
+      else if (msg.type === 'restarting')    handleRestarting();
     } catch (_) {}
   };
 
@@ -468,6 +475,21 @@ function applyLoopbackState(enabled) {
 function toggleLoopback() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ action: 'set_loopback', enabled: !loopbackEnabled }));
+}
+
+// ---- サーバー再起動 ----
+function restartServer() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!confirm('サーバープロセスを再起動しますか？\n接続中の全端末が切断されます。')) return;
+  ws.send(JSON.stringify({ action: 'restart' }));
+}
+
+function handleRestarting() {
+  const toast = document.getElementById('restart-toast');
+  const btn   = document.getElementById('restart-btn');
+  toast.style.display = 'block';
+  if (btn) btn.disabled = true;
+  setTimeout(() => { toast.style.display = 'none'; if (btn) btn.disabled = false; }, 5000);
 }
 
 

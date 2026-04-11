@@ -744,23 +744,23 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 
 ### 10.2 コア割り当てとタスク一覧
 
-#### Core 0（PRO_CPU）— 通信系
+#### Core 0（PRO_CPU）— 通信系（モデム AT コマンド全般）
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
 | `ctrl_task` | 5 | 8KB | 制御チャンネル（UDP）の送受信、再接続処理 |
-| `udp_rx_task` | 18 | 4KB | 音声UDPパケット受信 → ジッタバッファへ投入 |
-| `udp_tx_task` | 15 | 4KB | 送信キューからパケット取り出し → UDP送信 |
+| `udp_tx_task` | 15 | 4KB | 送信キューからパケット取り出し → AT+CASEND（音声送信） |
+| `udp_rx_task` | 18 | 4KB | AT+CARECV → ジッタバッファへ投入（音声受信） |
 | `heartbeat_task` | 3 | 2KB | 25秒ごとにHEARTBEATを制御UDPへ送信 |
 
-#### Core 1（APP_CPU）— 音声系
+#### Core 1（APP_CPU）— 音声処理系（I2S + Opus パイプライン）
 
 | タスク名 | 優先度 | スタック | 役割 |
 |----------|--------|----------|------|
 | `i2s_capture_task` | 19 | 4KB | I2SからPCMを取得（INMP441） → エンコードキューへ投入 |
 | `i2s_playback_task` | 19 | 4KB | 再生キューからPCMを取得 → I2Sで出力（PCM5102） |
-| `opus_encode_task` | 20 | 8KB | PCMをOpusエンコード → UDP送信キューへ投入 |
-| `opus_decode_task` | 20 | 8KB | 受信キューからOpusを取得 → デコード → 再生キューへ |
+| `opus_encode_task` | 20 | 32KB | PCMをOpusエンコード → UDP送信キューへ投入 |
+| `opus_decode_task` | 20 | 32KB | 受信キューからOpusを取得 → デコード → 再生キューへ |
 | `ptt_task` | 6 | 2KB | PTTボタンのGPIO監視、チャタリング除去（20ms）、状態通知 |
 | `state_machine_task` | 4 | 4KB | 制御メッセージに基づきシステム状態を管理 |
 | `led_task` | 3 | 2KB | イベントグループを監視し、AXP2101レジスタ0x69をI2C経由で更新してLED状態を制御 |
@@ -800,23 +800,23 @@ ESP32-S3はデュアルコア（Core 0 / Core 1）を持つ。音声系と通信
 [I2S DMA割り込み]
       ↓
 i2s_capture_task (Core1, 優先度19)  ← EVT_FLOOR_GRANTED 保持中のみキューへ投入
-      ↓ pcm_encode_queue
+      ↓ pcm_encode_queue          ← 同一コア内受け渡し
 opus_encode_task (Core1, 優先度20)
-      ↓ encoded_tx_queue
+      ↓ encoded_tx_queue          ← ここで1回だけコアをまたぐ
 udp_tx_task (Core0, 優先度15)
       ↓
-[UDP送信 → VPSサーバー]
+[AT+CASEND → VPSサーバー]
 ```
 
 #### 受信パイプライン（音声受信 → スピーカー出力）
 
 ```
-[VPSサーバー → UDP受信]
+[VPSサーバー → AT+CARECV]
       ↓
 udp_rx_task (Core0, 優先度18)
-      ↓ received_rx_queue（ジッタバッファ、深さ8）
+      ↓ received_rx_queue（ジッタバッファ）← ここで1回だけコアをまたぐ
 opus_decode_task (Core1, 優先度20)  ← 3フレーム以上溜まってから再生開始
-      ↓ pcm_playback_queue
+      ↓ pcm_playback_queue         ← 同一コア内受け渡し
 i2s_playback_task (Core1, 優先度19)
       ↓
 [I2S DMA出力]
@@ -1004,17 +1004,17 @@ I2C経由（7ビットアドレス 0x34）でPMICを設定する。
 全初期化完了後に各タスクを生成する。
 
 ```
-Core 0:
+Core 0（通信系）:
 1. ctrl_task        (Core0, 優先度5,  Stack 8KB)
-2. udp_rx_task      (Core0, 優先度18, Stack 4KB)
-3. udp_tx_task      (Core0, 優先度15, Stack 4KB)
+2. udp_tx_task      (Core0, 優先度15, Stack 4KB)
+3. udp_rx_task      (Core0, 優先度18, Stack 4KB)
 4. heartbeat_task   (Core0, 優先度3,  Stack 2KB)
 
-Core 1:
-5. opus_encode_task  (Core1, 優先度20, Stack 8KB)
-6. opus_decode_task  (Core1, 優先度20, Stack 8KB) ← 起動直後にデコーダ疑似スタックをウォームアップ
-7. i2s_capture_task  (Core1, 優先度19, Stack 4KB) ← EVT_FLOOR_GRANTED 待ちで休止
-8. i2s_playback_task (Core1, 優先度19, Stack 4KB) ← pcm_playback_queue 待ちで休止
+Core 1（音声処理系）:
+5. i2s_capture_task  (Core1, 優先度19, Stack 4KB)  ← EVT_FLOOR_GRANTED 待ちで休止
+6. i2s_playback_task (Core1, 優先度19, Stack 4KB)  ← pcm_playback_queue 待ちで休止
+7. opus_encode_task  (Core1, 優先度20, Stack 32KB)
+8. opus_decode_task  (Core1, 優先度20, Stack 32KB) ← 起動直後にデコーダ疑似スタックをウォームアップ
 9. ptt_task          (Core1, 優先度6,  Stack 2KB)
 10. state_machine_task (Core1, 優先度4, Stack 4KB)
 11. led_task          (Core1, 優先度3,  Stack 2KB)

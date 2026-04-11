@@ -81,17 +81,18 @@ void app_main(void)
     // Core 0: AT通信 + I2Sハードウェア
     xTaskCreatePinnedToCore(i2s_capture_task,  "i2s_cap",   4096,  NULL, 19, NULL, 0);
     xTaskCreatePinnedToCore(i2s_playback_task, "i2s_play",  4096,  NULL, 19, NULL, 0);
-    xTaskCreatePinnedToCore(udp_tx_task,       "udp_tx",    4096,  NULL, 15, NULL, 0);
+    xTaskCreatePinnedToCore(ptt_task,          "ptt",       2048,  NULL,  6, NULL, 1);
     xTaskCreatePinnedToCore(ctrl_task,         "ctrl",      8192,  NULL,  5, NULL, 0);
     xTaskCreatePinnedToCore(heartbeat_task,    "heartbeat", 2048,  NULL,  3, NULL, 0);
+    xTaskCreatePinnedToCore(led_task,          "led",       2048,  NULL,  3, NULL, 1);
 
     // Core 1: 音声処理パイプライン（Opusは内部バッファが大きいため32KBが必要）
     xTaskCreatePinnedToCore(opus_encode_task,  "opus_enc",  32768, NULL, 20, NULL, 1);
     xTaskCreatePinnedToCore(opus_decode_task,  "opus_dec",  32768, NULL, 20, NULL, 1);
+    xTaskCreatePinnedToCore(udp_tx_task,       "udp_tx",    4096,  NULL, 15, NULL, 0);
     xTaskCreatePinnedToCore(udp_rx_task,       "udp_rx",    4096,  NULL, 18, NULL, 1);
-    xTaskCreatePinnedToCore(ptt_task,          "ptt",       2048,  NULL,  6, NULL, 1);
     xTaskCreatePinnedToCore(state_machine_task,"state",     4096,  NULL,  4, NULL, 1);
-    xTaskCreatePinnedToCore(led_task,          "led",       2048,  NULL,  3, NULL, 1);
+    
 
     ESP_LOGI(TAG, "All tasks started.");
 }
