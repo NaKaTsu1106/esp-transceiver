@@ -81,8 +81,11 @@ esp_err_t i2s_capture_init(void)
 
         i2s_std_config_t rx_cfg = {
             .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),
+            // STEREO モードで受信し L チャンネルのみ抽出する。
+            // MONO モードでは DMA がステレオレートで埋まり i2s_channel_read が
+            // 10ms/frame で返るため、encode がボトルネックになり encoded_tx_queue が詰まる。
             .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                             I2S_SLOT_MODE_MONO),
+                                                             I2S_SLOT_MODE_STEREO),
             .gpio_cfg = {
                 .mclk = I2S_GPIO_UNUSED,
                 .bclk = CONFIG_I2S_RX_BCK_PIN,
@@ -103,20 +106,21 @@ esp_err_t i2s_capture_init(void)
 
 esp_err_t i2s_capture_read(int16_t *buf, size_t samples, size_t *bytes_read)
 {
-    // モノラル受信: INMP441 は 24bit I2S → 32bit スロット上位詰め → >> 16 で int16
-    static int32_t raw[CONFIG_OPUS_FRAME_SAMPLES];
+    // ステレオ受信: L/R インターリーブ int32。INMP441 は LEFT チャンネルに出力（L/R=GND）。
+    // INMP441 は 24bit I2S → 32bit スロット上位詰め → >> 16 で int16 → ゲイン適用
+    static int32_t raw[CONFIG_OPUS_FRAME_SAMPLES * 2];
     size_t bytes_got = 0;
 
     esp_err_t ret = i2s_channel_read(s_rx_chan, raw,
-                                      samples * sizeof(int32_t),
+                                      samples * 2 * sizeof(int32_t),
                                       &bytes_got, portMAX_DELAY);
     if (ret != ESP_OK) return ret;
 
-    size_t count = bytes_got / sizeof(int32_t);
-    for (size_t i = 0; i < count; i++) {
-        buf[i] = gain_clamp((int16_t)(raw[i] >> 16), MIC_GAIN_X);
+    size_t pairs = bytes_got / (2 * sizeof(int32_t));
+    for (size_t i = 0; i < pairs; i++) {
+        buf[i] = gain_clamp((int16_t)(raw[i * 2] >> 16), MIC_GAIN_X);
     }
-    if (bytes_read) *bytes_read = count * sizeof(int16_t);
+    if (bytes_read) *bytes_read = pairs * sizeof(int16_t);
     return ESP_OK;
 }
 
@@ -125,7 +129,7 @@ void i2s_capture_task(void *arg)
 #if TEST_MIC_LOOPBACK
     ESP_LOGW(TAG, "i2s_capture_task: MIC LOOPBACK MODE (INMP441 -> PCM5102, gain=%d)", MIC_GAIN_X);
 
-    static int32_t lb_rx[CONFIG_OPUS_FRAME_SAMPLES];
+    static int32_t lb_rx[CONFIG_OPUS_FRAME_SAMPLES * 2];
     static int32_t lb_tx[CONFIG_OPUS_FRAME_SAMPLES * 2];
     i2s_chan_handle_t tx = i2s_get_tx_chan();
     size_t bytes_got = 0, bytes_written = 0;
@@ -137,14 +141,14 @@ void i2s_capture_task(void *arg)
             ESP_LOGW(TAG, "loopback read failed: %s", esp_err_to_name(ret));
             continue;
         }
-        size_t count = bytes_got / sizeof(int32_t);
-        for (size_t i = 0; i < count; i++) {
-            // INMP441: 24bit 上位詰め → >> 16 で int16 → ゲイン → PCM5102 用に << 16
-            int16_t s = gain_clamp((int16_t)(lb_rx[i] >> 16), MIC_GAIN_X);
+        size_t pairs = bytes_got / (2 * sizeof(int32_t));
+        for (size_t i = 0; i < pairs; i++) {
+            // INMP441: L チャンネル 24bit 上位詰め → >> 16 で int16 → ゲイン → PCM5102 用に << 16
+            int16_t s = gain_clamp((int16_t)(lb_rx[i * 2] >> 16), MIC_GAIN_X);
             lb_tx[i * 2]     = (int32_t)s << 16;  // L
             lb_tx[i * 2 + 1] = (int32_t)s << 16;  // R
         }
-        i2s_channel_write(tx, lb_tx, count * 2 * sizeof(int32_t),
+        i2s_channel_write(tx, lb_tx, pairs * 2 * sizeof(int32_t),
                           &bytes_written, portMAX_DELAY);
     }
 
