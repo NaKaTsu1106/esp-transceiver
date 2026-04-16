@@ -65,6 +65,13 @@ void udp_rx_task(void *arg)
         uint8_t buf[512];
 
         while (xEventGroupGetBits(g_system_events) & EVT_CONNECTED) {
+            // FLOOR_GRANTED 中はモデムを udp_tx に専念させる。
+            // 自分が送話権を持っている間、相手は音声を送信できないためロスなし。
+            if (xEventGroupGetBits(g_system_events) & EVT_FLOOR_GRANTED) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+
             size_t got = 0;
             esp_err_t ret = modem_udp_recv(buf, sizeof(buf), &got, 20);
 

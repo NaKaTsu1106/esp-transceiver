@@ -34,15 +34,16 @@
 // I2S ピン設定（TX/RX を別ペリフェラルに分離）
 // =============================================================================
 // TX: PCM5102A スピーカー出力（I2S_NUM_0）
-#define CONFIG_I2S_TX_BCK_PIN       18  // Bit Clock
-#define CONFIG_I2S_TX_WS_PIN        17  // Word Select (L/R Clock)
-#define CONFIG_I2S_TX_DOUT_PIN      16  // データ出力
+#define CONFIG_I2S_TX_BCK_PIN       11  // Bit Clock
+#define CONFIG_I2S_TX_WS_PIN         9  // Word Select (L/R Clock)
+#define CONFIG_I2S_TX_DOUT_PIN      10  // データ出力
 
-// RX: PCM1808 ADC マイク入力（I2S_NUM_1）
-#define CONFIG_I2S_RX_MCLK_PIN      12  // Master Clock（実機に合わせて変更）
-#define CONFIG_I2S_RX_BCK_PIN       11  // Bit Clock
-#define CONFIG_I2S_RX_WS_PIN        10  // Word Select (L/R Clock)
-#define CONFIG_I2S_RX_DIN_PIN        9  // データ入力
+// RX: INMP441 MEMS マイク入力（I2S_NUM_1）
+// INMP441 は MCLK 不要・モノラル I2S 出力（L/R ピン GND = LEFT チャンネル）
+#define CONFIG_I2S_RX_BCK_PIN       18  // Bit Clock
+#define CONFIG_I2S_RX_LR_PIN        17  // LR
+#define CONFIG_I2S_RX_WS_PIN        16  // Word Select (L/R Clock)
+#define CONFIG_I2S_RX_DIN_PIN        8  // データ入力
 
 // =============================================================================
 // 音声設定
@@ -56,11 +57,10 @@
 // =============================================================================
 // 入力設定
 // =============================================================================
-// PTT: GPIO13 アナログ入力（ADC2 CH2）
-// 電圧が CONFIG_PTT_THRESHOLD_MV を CONFIG_PTT_HOLD_MS 以上継続して下回ると送信開始
-#define CONFIG_PTT_GPIO         13    // ADC ピン番号（参照用）
-#define CONFIG_PTT_THRESHOLD_MV 2500  // 押下判定閾値 (mV)
-#define CONFIG_PTT_HOLD_MS      100   // 押下継続判定時間 (ms)
+// PTT: GPIO14 デジタル入力（内部プルアップ）
+// スイッチ押下で GND に落ちる（LOW = 押下）。CONFIG_PTT_HOLD_MS 継続で確定。
+#define CONFIG_PTT_GPIO         14    // GPIO ピン番号
+#define CONFIG_PTT_HOLD_MS      100   // チャタリング除去・押下確定時間 (ms)
 
 // =============================================================================
 // ネットワーク設定
@@ -75,7 +75,7 @@
 // FreeRTOS キュー設定
 // =============================================================================
 #define CONFIG_PCM_ENCODE_QUEUE_LEN     4
-#define CONFIG_ENCODED_TX_QUEUE_LEN     4
+#define CONFIG_ENCODED_TX_QUEUE_LEN     8
 #define CONFIG_RECEIVED_RX_QUEUE_LEN    8
 #define CONFIG_PCM_PLAYBACK_QUEUE_LEN   4
 #define CONFIG_CTRL_TX_QUEUE_LEN        8

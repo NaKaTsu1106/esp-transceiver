@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
+#include "driver/gpio.h"
 #include <string.h>
 
 // 音質テスト用: 1 に設定するとマイクの代わりに 1kHz 正弦波を送信する
@@ -59,18 +60,31 @@ esp_err_t i2s_capture_init(void)
         ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
     }
 
-    // RX: PCM1808 ADC マイク入力（I2S_NUM_1、RX専用チャンネル）
-    // PCM1808 は MCLK が必須（256fs = 4.096MHz @ 16kHz）
+    // INMP441 L/R ピンを GPIO 出力 LOW に固定 → LEFT チャンネル選択
+    {
+        gpio_config_t lr_cfg = {
+            .pin_bit_mask = (1ULL << CONFIG_I2S_RX_LR_PIN),
+            .mode         = GPIO_MODE_OUTPUT,
+            .pull_up_en   = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&lr_cfg));
+        gpio_set_level(CONFIG_I2S_RX_LR_PIN, 0);
+    }
+
+    // RX: INMP441 MEMS マイク入力（I2S_NUM_1、RX専用チャンネル）
+    // INMP441 は MCLK 不要・24bit I2S Philips 出力。L/R ピン GND で LEFT チャンネルに出力。
     {
         i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
         ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &s_rx_chan));
 
         i2s_std_config_t rx_cfg = {
-            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),  // mclk_multiple=256
+            .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_AUDIO_SAMPLE_RATE),
             .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                             I2S_SLOT_MODE_STEREO),
+                                                             I2S_SLOT_MODE_MONO),
             .gpio_cfg = {
-                .mclk = CONFIG_I2S_RX_MCLK_PIN,
+                .mclk = I2S_GPIO_UNUSED,
                 .bclk = CONFIG_I2S_RX_BCK_PIN,
                 .ws   = CONFIG_I2S_RX_WS_PIN,
                 .dout = I2S_GPIO_UNUSED,
@@ -81,38 +95,37 @@ esp_err_t i2s_capture_init(void)
         ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
     }
 
-    ESP_LOGI(TAG, "i2s_capture_init: OK TX(I2S0 BCK=%d WS=%d DOUT=%d) RX(I2S1 MCLK=%d BCK=%d WS=%d DIN=%d)",
+    ESP_LOGI(TAG, "i2s_capture_init: OK TX(I2S0 BCK=%d WS=%d DOUT=%d) RX(I2S1 BCK=%d WS=%d DIN=%d)",
              CONFIG_I2S_TX_BCK_PIN, CONFIG_I2S_TX_WS_PIN, CONFIG_I2S_TX_DOUT_PIN,
-             CONFIG_I2S_RX_MCLK_PIN, CONFIG_I2S_RX_BCK_PIN, CONFIG_I2S_RX_WS_PIN, CONFIG_I2S_RX_DIN_PIN);
+             CONFIG_I2S_RX_BCK_PIN, CONFIG_I2S_RX_WS_PIN, CONFIG_I2S_RX_DIN_PIN);
     return ESP_OK;
 }
 
 esp_err_t i2s_capture_read(int16_t *buf, size_t samples, size_t *bytes_read)
 {
-    // ステレオ受信: L/R インターリーブ int32 バッファ
-    static int32_t raw[CONFIG_OPUS_FRAME_SAMPLES * 2];
+    // モノラル受信: INMP441 は 24bit I2S → 32bit スロット上位詰め → >> 16 で int16
+    static int32_t raw[CONFIG_OPUS_FRAME_SAMPLES];
     size_t bytes_got = 0;
 
     esp_err_t ret = i2s_channel_read(s_rx_chan, raw,
-                                      samples * 2 * sizeof(int32_t),
+                                      samples * sizeof(int32_t),
                                       &bytes_got, portMAX_DELAY);
     if (ret != ESP_OK) return ret;
 
-    size_t pairs = bytes_got / (2 * sizeof(int32_t));
-    // L チャンネルのみ抽出: PCM1808 は 24bit I2S → 32bit スロットに左詰め → >> 16 で int16 → ゲイン適用
-    for (size_t i = 0; i < pairs; i++) {
-        buf[i] = gain_clamp((int16_t)(raw[i * 2] >> 16), MIC_GAIN_X);
+    size_t count = bytes_got / sizeof(int32_t);
+    for (size_t i = 0; i < count; i++) {
+        buf[i] = gain_clamp((int16_t)(raw[i] >> 16), MIC_GAIN_X);
     }
-    if (bytes_read) *bytes_read = pairs * sizeof(int16_t);
+    if (bytes_read) *bytes_read = count * sizeof(int16_t);
     return ESP_OK;
 }
 
 void i2s_capture_task(void *arg)
 {
 #if TEST_MIC_LOOPBACK
-    ESP_LOGW(TAG, "i2s_capture_task: MIC LOOPBACK MODE (PCM1808 -> PCM5102, gain=%d)", MIC_GAIN_X);
+    ESP_LOGW(TAG, "i2s_capture_task: MIC LOOPBACK MODE (INMP441 -> PCM5102, gain=%d)", MIC_GAIN_X);
 
-    static int32_t lb_rx[CONFIG_OPUS_FRAME_SAMPLES * 2];
+    static int32_t lb_rx[CONFIG_OPUS_FRAME_SAMPLES];
     static int32_t lb_tx[CONFIG_OPUS_FRAME_SAMPLES * 2];
     i2s_chan_handle_t tx = i2s_get_tx_chan();
     size_t bytes_got = 0, bytes_written = 0;
@@ -124,14 +137,14 @@ void i2s_capture_task(void *arg)
             ESP_LOGW(TAG, "loopback read failed: %s", esp_err_to_name(ret));
             continue;
         }
-        size_t pairs = bytes_got / (2 * sizeof(int32_t));
-        for (size_t i = 0; i < pairs; i++) {
-            // PCM1808: 24bit 左詰め → >> 16 で int16 → ゲイン → PCM5102 用に << 16
-            int16_t s = gain_clamp((int16_t)(lb_rx[i * 2] >> 16), MIC_GAIN_X);
+        size_t count = bytes_got / sizeof(int32_t);
+        for (size_t i = 0; i < count; i++) {
+            // INMP441: 24bit 上位詰め → >> 16 で int16 → ゲイン → PCM5102 用に << 16
+            int16_t s = gain_clamp((int16_t)(lb_rx[i] >> 16), MIC_GAIN_X);
             lb_tx[i * 2]     = (int32_t)s << 16;  // L
             lb_tx[i * 2 + 1] = (int32_t)s << 16;  // R
         }
-        i2s_channel_write(tx, lb_tx, pairs * 2 * sizeof(int32_t),
+        i2s_channel_write(tx, lb_tx, count * 2 * sizeof(int32_t),
                           &bytes_written, portMAX_DELAY);
     }
 

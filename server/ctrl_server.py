@@ -55,6 +55,22 @@ class CtrlProtocol(asyncio.DatagramProtocol):
             logger.error(f"HELLO parse error from {addr}: {e}")
             return
 
+        # 再接続時: 旧セッションが floor を保持していれば解放する。
+        # device.register() は同一 device_id に同じ session_id を使い回すため、
+        # ここで解放しないと自分のセッションが floor を保持したまま PTT_START が
+        # 永遠に deny され続ける。
+        for existing in device.all_devices():
+            if existing.device_id == dev_id:
+                if floor.holder(existing.group_id) == existing.session_id:
+                    logger.info(
+                        f"Reconnect: releasing stale floor "
+                        f"session={existing.session_id} group={existing.group_id}"
+                    )
+                    floor.release(existing.group_id, existing.session_id)
+                    self._send_to_group(existing.group_id, existing.session_id,
+                                        protocol.make_ptt_notify_stop())
+                break
+
         d = device.register(dev_id, grp_id, addr)
         if d is None:
             logger.error(f"Session full, rejecting 0x{dev_id:08X}")

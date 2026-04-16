@@ -16,7 +16,7 @@
 
 static const char *TAG = "i2s_playback";
 
-#define SPK_GAIN_X      8
+#define SPK_GAIN_X      32
 #define BEEP_AMPLITUDE  12000  // ビープ振幅（int16スケール）: SPK_GAIN_X に依存しない固定値
 
 // ビープ再生状態（i2s_playback_task 内で使用）

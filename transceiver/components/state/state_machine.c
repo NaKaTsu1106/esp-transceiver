@@ -3,9 +3,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include "driver/gpio.h"
 #include "led.h"
 
 static const char *TAG = "state_machine";
@@ -101,8 +99,9 @@ void state_machine_task(void *arg)
 
         case MSG_PTT_START_DENY:
             ESP_LOGI(TAG, "PTT_START_DENY: floor busy");
-            xEventGroupClearBits(g_system_events, EVT_FLOOR_GRANTED | EVT_FLOOR_FREE);
-            xEventGroupSetBits(g_system_events, EVT_FLOOR_BUSY);
+            // EVT_FLOOR_BUSY は MSG_PTT_NOTIFY/NOTIFY_STOP のみが管理する。
+            // DENY は送信権取得失敗を表すだけで受信状態を変えない。
+            // ここで FLOOR_BUSY をセットすると NOTIFY_STOP が来るまで LED が点滅し続ける。
             break;
 
         case MSG_PTT_NOTIFY:
@@ -132,47 +131,19 @@ void state_machine_task(void *arg)
     }
 }
 
-// GPIO13 = ADC2 CH2 の電圧を読み mV で返す。キャリブレーション未対応時は線形近似。
-static int ptt_read_mv(adc_oneshot_unit_handle_t adc, adc_cali_handle_t cali)
-{
-    int raw = 0;
-    adc_oneshot_read(adc, ADC_CHANNEL_2, &raw);
-    int mv = 0;
-    if (cali) {
-        adc_cali_raw_to_voltage(cali, raw, &mv);
-    } else {
-        mv = raw * 3300 / 4095;  // 12bit 線形近似（3.3V レール）
-    }
-    return mv;
-}
-
 void ptt_task(void *arg)
 {
-    // ADC2 CH2（GPIO13）初期化
-    adc_oneshot_unit_handle_t adc = NULL;
-    adc_oneshot_unit_init_cfg_t unit_cfg = { .unit_id = ADC_UNIT_2 };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_cfg, &adc));
-
-    adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten    = ADC_ATTEN_DB_12,      // 0〜3100mV レンジ（2.5V を含む）
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    // GPIO14 内部プルアップ入力（LOW = 押下）
+    gpio_config_t io_cfg = {
+        .pin_bit_mask = (1ULL << CONFIG_PTT_GPIO),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc, ADC_CHANNEL_2, &chan_cfg));
+    ESP_ERROR_CHECK(gpio_config(&io_cfg));
 
-    // キャリブレーション（ESP32-S3 は Curve Fitting）
-    adc_cali_handle_t cali = NULL;
-    adc_cali_curve_fitting_config_t cali_cfg = {
-        .unit_id  = ADC_UNIT_2,
-        .chan     = ADC_CHANNEL_2,
-        .atten   = ADC_ATTEN_DB_12,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    bool calibrated = (adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali) == ESP_OK);
-    if (!calibrated) cali = NULL;
-
-    ESP_LOGI(TAG, "ptt_task: ADC2 CH2 GPIO%d threshold=%dmV hold=%dms cal=%s",
-             CONFIG_PTT_GPIO, CONFIG_PTT_THRESHOLD_MV, CONFIG_PTT_HOLD_MS,
-             calibrated ? "yes" : "no (linear approx)");
+    ESP_LOGI(TAG, "ptt_task: GPIO%d pull-up hold=%dms", CONFIG_PTT_GPIO, CONFIG_PTT_HOLD_MS);
 
     bool pressed = false;
 
@@ -188,18 +159,16 @@ void ptt_task(void *arg)
                                 pdFALSE, pdTRUE, portMAX_DELAY);
         }
 
-        int mv = ptt_read_mv(adc, cali);
-        bool current = (mv < CONFIG_PTT_THRESHOLD_MV);
+        bool current = (gpio_get_level(CONFIG_PTT_GPIO) == 0);
 
         if (current && !pressed) {
-            // 閾値割れを検出: CONFIG_PTT_HOLD_MS 後も継続していれば押下と判定
+            // LOW を検出: CONFIG_PTT_HOLD_MS 後も継続していれば押下確定（チャタリング除去）
             vTaskDelay(pdMS_TO_TICKS(CONFIG_PTT_HOLD_MS));
-            int mv2 = ptt_read_mv(adc, cali);
-            if (mv2 >= CONFIG_PTT_THRESHOLD_MV) {
-                continue; // 一時的な電圧降下（ホールド時間未満）
+            if (gpio_get_level(CONFIG_PTT_GPIO) != 0) {
+                continue; // チャタリング
             }
             pressed = true;
-            ESP_LOGI(TAG, "ptt_task: PTT pressed (%dmV < %dmV)", mv2, CONFIG_PTT_THRESHOLD_MV);
+            ESP_LOGI(TAG, "ptt_task: PTT pressed");
             xEventGroupSetBits(g_system_events, EVT_PTT_PRESSED);
             ctrl_msg_t m = { .type = MSG_PTT_START, .payload_len = 0 };
             if (xQueueSend(g_ctrl_tx_queue, &m, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -209,7 +178,7 @@ void ptt_task(void *arg)
             }
         } else if (!current && pressed) {
             pressed = false;
-            ESP_LOGI(TAG, "ptt_task: PTT released (%dmV >= %dmV)", mv, CONFIG_PTT_THRESHOLD_MV);
+            ESP_LOGI(TAG, "ptt_task: PTT released");
             xEventGroupClearBits(g_system_events, EVT_PTT_PRESSED | EVT_FLOOR_GRANTED);
             beep_request(BEEP_FREQ_STOP_HZ, BEEP_DURATION_MS, false);  // 送話終了合図
             ctrl_msg_t m = { .type = MSG_PTT_STOP, .payload_len = 0 };
